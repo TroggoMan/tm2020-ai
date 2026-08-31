@@ -1,0 +1,54 @@
+# Per-user ownership of the virtual-pad pool.
+#
+# WHY: XInput exposes at most 4 controllers per process, and Wine shows every
+# game every /dev/input node - so two TM2020 instances on one box both grab
+# "the first 4 gamepads" (the same four). Scoping each pad to the linux user
+# whose game should own it makes the kernel do the routing: a game running as
+# tmai01 can open() only its four event nodes, winebus skips the rest with
+# EACCES, and that Wine instance builds exactly its 4 XInput slots.
+#
+# This matches the fleet's existing isolation: one paid account = user
+# troggoman, each free account = its own user (tmai01, tmai02, ...).
+#
+# LAYOUT (pool of 16, started once before any game - see
+# control/virtual_pad_server.py --pool 16):
+#   pads  0-3   -> troggoman   (paid game, 4 splitscreen seats)
+#   pads  4-7   -> tmai01
+#   pads  8-11  -> tmai02
+#   pads 12-15  -> troggoman   (spare / privileged surveyor / 3rd game)
+#
+# INSTALL (do this while NO game is running):
+#   sudo cp deploy/99-tmai-pads.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   # then (re)start the pad pool so the rules apply as devices are created:
+#   #   sudo pkill -f virtual_pad_server ; <start pool>
+#   # do NOT udevadm trigger the input subsystem while a game runs - it
+#   # churns the device nodes and the game will not re-enumerate.
+#
+# The pad server names devices "TMAI Virtual Xbox 360 Controller" (pad 0),
+# "... #1", "... #2", ... "... #15". GROUP=input keeps the pad server (which
+# runs as a normal user in group input) able to write the uinput side.
+
+# --- troggoman: paid game seats ---
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller",    OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #1", OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #2", OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #3", OWNER="troggoman", GROUP="input", MODE="0660"
+
+# --- tmai01 ---
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #4", OWNER="tmai01", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #5", OWNER="tmai01", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #6", OWNER="tmai01", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #7", OWNER="tmai01", GROUP="input", MODE="0660"
+
+# --- tmai02 ---
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #8",  OWNER="tmai02", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #9",  OWNER="tmai02", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #10", OWNER="tmai02", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #11", OWNER="tmai02", GROUP="input", MODE="0660"
+
+# --- spare (troggoman) ---
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #12", OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #13", OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #14", OWNER="troggoman", GROUP="input", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="TMAI Virtual Xbox 360 Controller #15", OWNER="troggoman", GROUP="input", MODE="0660"

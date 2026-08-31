@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Put Trackmania into an instance's Steam library without downloading it again.
+#
+#   tools/seed-game 1
+#   tools/seed-game 1 2 3
+#
+# /mnt/4TB is XFS with reflink, and every instance's Steam library lives on
+# it, so `cp --reflink` clones the 6.7GB install in about a second and costs no
+# extra disk until the copies diverge. Three instances is still 6.7GB on disk.
+#
+# Why a copy per user rather than one shared library folder: a shared folder
+# needs group-writable steamapps, and then N Steam clients share one
+# appmanifest and can each decide to update or validate the same files at the
+# same time. The copies cost the same disk and cannot collide - each client
+# owns its own manifest and updates independently.
+#
+# Steam scans its library at startup, so it must be restarted afterwards. The
+# account still has to OWN the game: Trackmania is free-to-play, so that is one
+# click on the store page, and it stays a click - nothing here logs in or
+# claims a licence on your behalf.
+set -euo pipefail
+
+SRC_LIB="${TMAI_SRC_LIB:-/mnt/4TB/SteamLibrary/steamapps}"
+APPID=2225070
+APPDIR=Trackmania
+
+[ -d "$SRC_LIB/common/$APPDIR" ] || { echo "no game at $SRC_LIB/common/$APPDIR" >&2; exit 1; }
+[ -f "$SRC_LIB/appmanifest_$APPID.acf" ] || { echo "no appmanifest_$APPID.acf in $SRC_LIB" >&2; exit 1; }
+
+[ $# -gt 0 ] || { echo "usage: seed-game <instance> [instance...]" >&2; exit 1; }
+
+for INSTANCE in "$@"; do
+  USER_NAME="tmai$(printf '%02d' "$INSTANCE")"
+  getent passwd "$USER_NAME" >/dev/null || { echo "no such user: $USER_NAME" >&2; continue; }
+  HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+  DST="$HOME_DIR/.local/share/Steam/steamapps"
+
+  if ! sudo test -d "$DST"; then
+    echo "instance $INSTANCE: no Steam library at $DST - start Steam once first" >&2
+    continue
+  fi
+  if pgrep -u "$USER_NAME" -f steam >/dev/null 2>&1; then
+    echo "instance $INSTANCE: Steam is running as $USER_NAME - close it first," >&2
+    echo "                    or it will rewrite the manifest from memory" >&2
+    continue
+  fi
+
+  if sudo test -d "$DST/common/$APPDIR"; then
+    echo "instance $INSTANCE: already has $APPDIR"
+  else
+    sudo -u "$USER_NAME" mkdir -p "$DST/common"
+    sudo cp -a --reflink=auto "$SRC_LIB/common/$APPDIR" "$DST/common/$APPDIR"
+    sudo chown -R "$USER_NAME:$USER_NAME" "$DST/common/$APPDIR"
+    echo "instance $INSTANCE: game files -> $DST/common/$APPDIR"
+  fi
+
+  sudo cp -a "$SRC_LIB/appmanifest_$APPID.acf" "$DST/appmanifest_$APPID.acf"
+  sudo chown "$USER_NAME:$USER_NAME" "$DST/appmanifest_$APPID.acf"
+  echo "instance $INSTANCE: manifest installed"
+  echo "instance $INSTANCE: start Steam, add Trackmania to the library (free),"
+  echo "                    and it should show as installed rather than downloading."
+done

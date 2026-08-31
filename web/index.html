@@ -1,0 +1,2497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TMAI Control</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#242c38; --ink:#e6edf3;
+    --dim:#8b949e; --accent:#4dd4ac; --warn:#e3b341; --bad:#f4645f;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 20px;
+         border-bottom:1px solid var(--line);background:var(--panel);
+         position:sticky;top:0;z-index:5;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;letter-spacing:.08em;text-transform:uppercase;
+     font-weight:600}
+  .pills{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+  .pill{font:11px/1 var(--mono);padding:6px 10px;border-radius:99px;
+        border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+  .pill.on{color:var(--accent);border-color:#1e4c40;background:#10241f}
+  .pill.off{color:var(--bad);border-color:#4a2320;background:#241413}
+  main{display:grid;gap:14px;padding:16px 20px;max-width:1200px;margin:0 auto;
+       grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+          padding:14px 16px}
+  section.wide{grid-column:1/-1}
+  h2{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);
+     margin:0 0 12px;font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px}
+  .stat{background:#0f141a;border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+  .stat .k{font:10px/1 var(--mono);color:var(--dim);text-transform:uppercase;
+           letter-spacing:.06em}
+  .stat .v{font:16px/1.3 var(--mono);margin-top:5px;overflow:hidden;
+           text-overflow:ellipsis;white-space:nowrap}
+  button{font:12px/1 inherit;padding:8px 13px;border-radius:6px;cursor:pointer;
+         background:#20272f;color:var(--ink);border:1px solid var(--line)}
+  button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.go{background:#12352c;border-color:#1e6a55;color:var(--accent)}
+  button.stop{background:#331917;border-color:#7a2f2a;color:var(--bad)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .row:last-child{margin-bottom:0}
+  input,select{font:12px var(--mono);padding:7px 9px;border-radius:6px;
+        background:#0f141a;border:1px solid var(--line);color:var(--ink);min-width:0}
+  input[type=text],input[type=number]{flex:1}
+  input[type=range]{flex:1;accent-color:var(--accent);padding:0}
+  label{font:11px var(--mono);color:var(--dim);min-width:46px}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:7px;
+      padding:11px;font:11px/1.55 var(--mono);color:#b9c4d0;overflow:auto;
+      max-height:260px;margin:0;white-space:pre-wrap;word-break:break-word}
+  .bar{height:5px;background:#0f141a;border-radius:3px;overflow:hidden;margin-top:5px}
+  .bar i{display:block;height:100%;background:var(--accent);width:0;
+         transition:width .1s linear}
+  .hint{font-size:11px;color:var(--dim);margin-top:9px}
+  .modal{display:none;position:fixed;inset:0;background:rgba(4,7,11,.78);
+         z-index:20;padding:6vh 16px;overflow:auto}
+  .modal.open{display:block}
+  .sheet{max-width:820px;margin:0 auto;background:var(--panel);
+         border:1px solid var(--line);border-radius:11px;padding:16px}
+  .list{max-height:52vh;overflow:auto;border:1px solid var(--line);
+        border-radius:7px;background:#0b0f14;margin-top:10px}
+  .item{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;
+        display:flex;gap:12px;align-items:baseline}
+  .item:last-child{border-bottom:0}
+  .item:hover{background:#131a22}
+  .item .nm{flex:1;font:12px var(--mono);overflow:hidden;
+            text-overflow:ellipsis;white-space:nowrap}
+  .item .tm{font:12px var(--mono);color:var(--accent);white-space:nowrap}
+  .item .dt{font:10px var(--mono);color:var(--dim);white-space:nowrap}
+  .empty{padding:16px;color:var(--dim);font-size:12px;text-align:center}
+  .warn{color:var(--warn)}
+  .whyList{display:flex;flex-direction:column-reverse;gap:9px;max-height:420px;
+           overflow:auto}
+  .why{border:1px solid var(--line);border-left:2px solid var(--line);
+       border-radius:7px;background:#0b0f14;padding:9px 12px}
+  .why.finish{border-left-color:var(--accent)}
+  .why.bad{border-left-color:var(--bad)}
+  .why .hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;
+           font:11px var(--mono);color:var(--dim)}
+  .why .hd b{color:var(--ink);font-weight:600}
+  .why .parts{margin-top:6px;display:flex;gap:7px;flex-wrap:wrap}
+  .why .part{font:10px var(--mono);padding:2px 7px;border-radius:99px;
+             border:1px solid var(--line);color:var(--dim)}
+  .why .part.pos{color:var(--accent);border-color:#1e4c40}
+  .why .part.neg{color:var(--bad);border-color:#4a2320}
+  .why .note{margin-top:6px;font-size:12px;color:#b9c4d0;
+             padding-left:12px;border-left:2px solid var(--line)}
+  .item button{padding:5px 10px;font-size:11px}
+  .tunegrid{display:grid;gap:10px;
+            grid-template-columns:repeat(auto-fit,minmax(215px,1fr))}
+  .fld{background:#0f141a;border:1px solid var(--line);border-radius:7px;
+       padding:8px 10px}
+  .fld .k{font:10px var(--mono);color:var(--dim);text-transform:uppercase;
+          letter-spacing:.06em;display:block;margin-bottom:5px}
+  .fld input,.fld select{width:100%}
+  .fld .h{font-size:11px;color:var(--dim);margin-top:5px;line-height:1.4}
+  .grp{grid-column:1/-1;font:10px var(--mono);color:var(--dim);
+       text-transform:uppercase;letter-spacing:.1em;margin:8px 0 -2px}
+  .surfgrid{display:grid;gap:7px;
+            grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+  .surf{display:flex;gap:8px;align-items:center;background:#0f141a;
+        border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+  .surf .nm{flex:1;font:12px var(--mono)}
+  .surf input[type=number]{width:74px;flex:none}
+  .surf .bdg{font:9px var(--mono);padding:2px 6px;border-radius:99px;
+             border:1px solid var(--line);color:var(--dim)}
+  .surf.kill{border-color:#7a2f2a;background:#1a1010}
+  .surf .nm b{color:var(--ok);font-size:9px;vertical-align:middle}
+  .surfscope{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .fleetrow{padding:2px 0}
+  .pill{font:10px var(--mono);padding:3px 8px;border-radius:99px;
+        border:1px solid #242c38;background:#0f141a;color:#7d8794}
+  .pill.up{border-color:#2f6b58;color:var(--ok)}
+  .pill.down{border-color:#5a2f2c;color:#f4645f}
+  .chip{background:#0f141a;border:1px solid #242c38;color:#7d8794;
+        border-radius:99px;padding:4px 11px;font:11px var(--mono);cursor:pointer}
+  .chip:hover{border-color:#3a4553;color:#e6edf3}
+  .chip.on{background:#132a24;border-color:#2f6b58;color:var(--ok)}
+  .surf label{min-width:auto;display:flex;gap:4px;align-items:center;
+              cursor:pointer;white-space:nowrap}
+  .surf label input{min-width:auto;width:auto}
+  .toggle{display:flex;gap:5px;align-items:center;font:11px var(--mono);
+          padding:6px 10px;border:1px solid var(--line);border-radius:99px;
+          cursor:pointer;color:var(--dim)}
+  .toggle input{width:auto;min-width:auto}
+  .toggle.on{color:var(--accent);border-color:#1e4c40;background:#10241f}
+  .nnwrap{position:relative;background:#080b10;border:1px solid var(--line);
+          border-radius:9px;overflow:hidden}
+  #nn{display:block;width:100%}
+  .nnhud{position:absolute;top:11px;right:13px;text-align:right;
+         pointer-events:none}
+  .nnq{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+  .nnq b{font:15px var(--mono);color:var(--accent)}
+  .nnq .k{font:10px var(--mono);color:var(--dim);text-transform:uppercase}
+  #nnSpark{border:1px solid var(--line);border-radius:4px;background:#0b0f14}
+  .obar{display:flex;gap:7px;align-items:center;justify-content:flex-end;
+        margin-top:6px;font:10px var(--mono);color:var(--dim)}
+  .obar .t{width:34px;text-align:right;text-transform:uppercase}
+  .obar .v{width:44px;text-align:left;color:var(--ink)}
+  .obar .m{width:92px;height:6px;background:#141a22;border-radius:3px;
+           position:relative;overflow:hidden}
+  .obar .m i{position:absolute;top:0;bottom:0;background:var(--accent)}
+
+/* Hints, marks, checkpoint sizes and section times. */
+.hintrow{border:1px solid #2a2e38;border-radius:6px;padding:.6em .8em;
+         margin:.5em 0;background:#181b22}
+table.splits{border-collapse:collapse;width:100%;margin:.6em 0}
+table.splits th,table.splits td{border:1px solid #2a2e38;padding:.35em .7em;
+                                text-align:left;font-variant-numeric:tabular-nums}
+table.splits th{background:#1c1f27}
+/* The section with the most time on the table - the one worth working on. */
+table.splits tr.worst td{background:#2a2418}
+table.splits tr.worst td:first-child::after{content:" ← biggest gap";
+                                            color:#d9a441;font-size:.85em}
+/* A seat row that is not ready to train gets marked, because "car present,
+   playing, answers to nothing" is the failure that otherwise looks like bad
+   driving. */
+.fleetrow.warn{border-left:3px solid var(--warn);padding-left:.6em}
+</style>
+</head>
+<body>
+<header>
+  <h1>TMAI Control</h1>
+  <div class="pills" id="pills"></div>
+</header>
+
+<main>
+  <section>
+    <h2>Telemetry</h2>
+    <div class="grid" id="telem"></div>
+    <div class="hint" id="telemHint"></div>
+  </section>
+
+  <section>
+    <h2>Game</h2>
+    <div class="row">
+      <button onclick="cmd('restart')">Restart map</button>
+      <button onclick="cmd('menu')">Main menu</button>
+      <button onclick="cmd('ping')">Ping</button>
+      <button onclick="window.open('/training','_blank')"
+              title="TRAINING.md - how to run the two stages and tune them, step by step">Training guide</button>
+      <button onclick="window.open('/tricks','_blank')"
+              title="TRICKS.md - how to teach it a trick: see it, reach it, pay for it as a band, then take the shaping away">Tricks guide</button>
+      <button onclick="window.open('/docs','_blank')"
+              title="README.md - the long one, with the reasoning behind every mechanism">Docs</button>
+      <button onclick="window.open('/grid','_blank')"
+              title="Live video of every game instance in one resizable grid - the surface you capture to stream">Instance grid</button>
+    </div>
+    <div class="row">
+      <input type="text" id="tmx" placeholder="TMX map id, e.g. 12345">
+      <button onclick="playTmx()">Load map</button>
+      <input id="markName" placeholder="mark name, e.g. before-the-jump"
+             style="width:16em">
+      <button onclick="markHere()"
+              title="Record where the car is right now under this name, so a hint can say mark_from/mark_to instead of an arc length you had to guess">Mark here</button>
+    </div>
+    <div class="row">
+      <label>rate</label>
+      <input type="number" id="rate" value="100" min="0" max="1000">
+      <button onclick="cmd('rate ' + document.getElementById('rate').value)">Set Hz</button>
+    </div>
+    <div class="hint">Telemetry is frame-bound, so a high rate here is a ceiling
+      request, not a promise.</div>
+  </section>
+
+  <section>
+    <h2>Manual pad</h2>
+    <div class="row"><label>steer</label>
+      <input type="range" id="steer" min="-1" max="1" step="0.01" value="0"
+             oninput="pad()"><span id="steerV" class="k">0.00</span></div>
+    <div class="row"><label>gas</label>
+      <input type="range" id="gas" min="0" max="1" step="0.01" value="0"
+             oninput="pad()"><span id="gasV" class="k">0.00</span></div>
+    <div class="row"><label>brake</label>
+      <input type="range" id="brake" min="0" max="1" step="0.01" value="0"
+             oninput="pad()"><span id="brakeV" class="k">0.00</span></div>
+    <div class="row"><button onclick="padReset()">Release all</button>
+      <label style="min-width:auto">give-up btn</label>
+      <select id="guBtn" style="max-width:80px">
+        <option>y</option><option>x</option><option>b</option><option>a</option>
+        <option>lb</option><option>rb</option><option>select</option><option>start</option>
+      </select>
+      <button onclick="post('/api/press',{button:$('guBtn').value,hold_ms:250})">
+        Test give up</button></div>
+    <div class="hint">Bind <b>Give up</b> to that button in the game's controller
+      settings. Episode reset presses it instead of restarting the map, which
+      skips the ~8s intro fly-in — a third of wall-clock on a 25s lap.</div>
+    <div class="hint warn" id="padWarn"></div>
+  </section>
+
+  <section>
+    <h2>Reference line</h2>
+    <div class="row">
+      <button onclick="openPicker()">Browse replays…</button>
+      <span class="k" id="pickedName" style="color:var(--dim);font:11px var(--mono)">
+        no replay selected</span>
+    </div>
+    <div class="row">
+      <input type="text" id="lineName" placeholder="line name, e.g. spring-2026-03">
+      <select id="recMode" style="max-width:110px">
+        <option value="auto">auto</option>
+        <option value="replay">replay</option>
+        <option value="live">live</option>
+      </select>
+    </div>
+    <div class="row">
+      <label style="min-width:auto"><input type="checkbox" id="recDemo"
+        style="min-width:auto" checked> also save demo data</label>
+      <button class="go" id="recStart" onclick="recStart()">Record</button>
+      <button class="stop" id="recStop" onclick="post('/api/record/stop')">Stop</button>
+    </div>
+    <div class="hint"><b>auto</b> records whatever is being viewed — so play a
+      replay and it captures that, no driving needed. <b>live</b> only records
+      your own spawned run. Demo data also keeps the inputs, for seeding SAC
+      later.</div>
+    <pre id="recLog"></pre>
+  </section>
+
+  <div id="picker" class="modal" onclick="if(event.target===this)closePicker()">
+    <div class="sheet">
+      <div class="row">
+        <input type="text" id="pickQ" placeholder="search replays…"
+               oninput="searchReplays()" autocomplete="off">
+        <button onclick="closePicker()">Close</button>
+      </div>
+      <div id="pickList" class="list"></div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="pickPath" placeholder="…or paste a full path">
+        <button onclick="usePath()">Use path</button>
+      </div>
+      <div class="hint">Selecting a replay names the line and switches the mode.
+        It can't auto-load it — open the replay in game and press play, then hit
+        Record.</div>
+    </div>
+  </div>
+
+  <section class="wide">
+    <h2>Training</h2>
+    <div class="row">
+      <label>stage</label>
+      <select id="stageSel" onchange="stageChanged()" style="max-width:190px">
+        <option value="race">race — follow a line</option>
+        <option value="explore">explore — no line needed</option>
+      </select>
+      <span class="hint" id="stageHint" style="margin:0"></span>
+    </div>
+    <div class="row" id="lineRow">
+      <label>line</label>
+      <select id="lineSel" onchange="checkLine()"></select>
+      <label>steps</label>
+      <input type="number" id="steps" value="200000" min="1000" style="max-width:130px">
+      <label title="Which model file to train. Pick an existing one from the list, or type a new name to start a fresh model without touching the old one. Blank = stage default (sac_explore / sac_tm_v2).">model</label>
+      <input type="text" id="trName" placeholder="stage default" list="modelList"
+             style="max-width:150px" onchange="loadModelSettings()">
+      <datalist id="modelList"></datalist>
+      <label style="min-width:auto" title="Continue an existing model AND its replay buffer. Untick to start from scratch - the old model is archived first, never deleted."><input type="checkbox" id="resume"
+        style="min-width:auto" onchange="resumeChanged()"> resume</label>
+      <button class="go" id="trStart" onclick="trainStart()">Start</button>
+      <button class="stop" id="trStop" onclick="post('/api/train/stop')">Stop</button>
+    </div>
+    <div class="row">
+      <label title="metres off the reference line before the episode ends">off-line</label>
+      <input type="number" id="tMaxOffset" value="30" step="1" style="max-width:80px">
+      <label title="m/s below which the car counts as not moving">stuck m/s</label>
+      <input type="number" id="tStuckSpeed" value="1.0" step="0.1" style="max-width:80px">
+      <label title="seconds below that speed before the episode ends">stuck s</label>
+      <input type="number" id="tStuckSecs" value="5" step="0.5" style="max-width:80px">
+      <label title="episode cap in seconds">ep cap</label>
+      <input type="number" id="tEpCap" value="45" step="5" style="max-width:80px">
+    </div>
+    <div class="row">
+      <label title="penalty per unit of steering change - punishes brute-force twitching">weave</label>
+      <input type="number" id="tWeave" value="0" step="0.01" style="max-width:80px">
+      <label title="extra penalty per full steering sign flip at speed">flip</label>
+      <input type="number" id="tReversal" value="0" step="0.01" style="max-width:80px">
+      <label title="only used by the sphere checkpoint test - the gate test uses the width and height in Tuning">cp radius</label>
+      <input type="number" id="tCpRadius" value="20" step="1" style="max-width:80px">
+      <span class="hint" style="margin:0">seeds the map's config the first time
+        it is seen — after that, tune it live below</span>
+    </div>
+    <div class="row">
+      <label title="how many game instances feed the SAME model">instances</label>
+      <select id="trInstances" onchange="renderFleet()" style="max-width:70px">
+        <option>1</option><option>2</option><option>3</option><option>4</option>
+      </select>
+      <label title="Drive N cars inside ONE splitscreen game instead of N separate games. The extra players are guests, so one account covers all of them. Overrides instances when above 1.">seats</label>
+      <select id="trSeats" style="max-width:70px">
+        <option>1</option><option>2</option><option>3</option><option>4</option>
+      </select>
+      <label title="what to do during the warm-up, before the policy can act">warm-up</label>
+      <select id="trBootstrap" style="max-width:220px">
+        <option value="pursuit">drive toward the line</option>
+        <option value="straight">just accelerate (type A)</option>
+        <option value="off">random flailing (SB3 default)</option>
+      </select>
+      <span class="hint" id="fleetHint" style="margin:0"></span>
+      <span class="hint" id="modelHint" style="margin:0"></span>
+    </div>
+    <div class="row">
+      <label title="Control loop rate. 20Hz gives each step a 50ms budget so the gradient work fits; 40Hz is the old default and made slip climb. Changing it invalidates a resumed buffer's timing.">control Hz</label>
+      <input type="number" id="trControlHz" value="20" step="5" min="5" style="max-width:70px">
+      <label title="SAC updates per control step. Auto (blank) re-picks a higher number as instances grow, which is what let slip return - 2 is the safe explicit value.">grad steps</label>
+      <input type="number" id="trGradSteps" value="2" step="1" min="1" style="max-width:70px" placeholder="auto">
+      <label title="Mirror every checkpoint and new best to this shared 'general driver' path so the next run/stage/track starts from the best brain so far. Blank = don't.">promote to</label>
+      <input type="text" id="trPromote" value="models/driver.zip" style="max-width:150px" placeholder="none">
+      <label title="Warm-start a FRESH run from this .zip (weights only, empty buffer, no scripted warm-up). Ignored when resume finds a local checkpoint. Blank = random init.">init from</label>
+      <input type="text" id="trInitFrom" placeholder="e.g. models/driver.zip" style="max-width:170px">
+      <label title="Pin the checkpoint sequence, e.g. 0,1,3,4,2. Overrides the nearest-neighbour guess. Pair with cp_strict_order so the car is always aimed at the NEXT checkpoint, not the closest. Blank = auto.">gate order</label>
+      <input type="text" id="trGateOrder" placeholder="auto" style="max-width:110px">
+    </div>
+    <div class="row">
+      <label title="Explore only. Stop after this many finishes with no further improvement, build the racer's line from the best run, and hand over. 0 runs explore forever.">hand over after</label>
+      <select id="trHandover" style="max-width:170px">
+        <option value="0" selected>never (run forever)</option>
+        <option value="1">1 finish</option>
+        <option value="3">3 finishes</option>
+        <option value="5">5 finishes</option>
+        <option value="10">10 finishes</option>
+        <option value="20">20 finishes</option>
+        <option value="50">50 finishes</option>
+        <option value="100">100 finishes</option>
+        <option value="250">250 finishes</option>
+        <option value="500">500 finishes</option>
+      </select>
+      <label title="Finishes with no new best time before it accepts the track is learned. Both conditions have to hold: 'finished N times' alone can be a fluke it cannot repeat, and 'stopped improving' alone would fire on a track it has never completed.">then wait</label>
+      <select id="trPatience" style="max-width:170px">
+        <option value="10">10 without a best</option>
+        <option value="25" selected>25 without a best</option>
+        <option value="50">50 without a best</option>
+        <option value="100">100 without a best</option>
+        <option value="250">250 without a best</option>
+      </select>
+      <label class="toggle" title="After handover, start the race stage automatically with the line it just built"><input type="checkbox" id="trThenRace" checked> then race</label>
+      <label class="toggle" title="On a sustained fall in return, restore the best snapshot in place. Off by default: a rollback during a deliberate exploration burst, or while the buffer is still mixed after a reward change, throws away progress you wanted."><input type="checkbox" id="trRollback"> auto-rollback</label>
+    </div>
+    <div id="fleetRows"></div>
+    <div class="grp">splitscreen seats</div>
+    <div class="hint">Four cars inside <em>one</em> game. The extra players are
+      guests, so one account drives all of them &mdash; and local multiplayer is
+      the only way a Starter Access account can start a map off local disk at
+      all.
+      <p><strong>The pad link is the one to watch.</strong> A seat can have a
+      car, be in Playing, and still answer to nothing. It cannot be settled by
+      watching either &mdash; a car that has moved was driven by <em>something</em>,
+      not necessarily by us &mdash; so it has to be tested by moving each pad
+      and seeing which seat responds. An untested seat that turns out to be
+      unbound ends every episode &lsquo;stuck&rsquo;, which reads exactly like
+      a policy that cannot drive.</p></div>
+    <div class="row">
+      <button onclick="calibrateSeats()">Test pad links</button>
+      <span class="hint" id="calibStatus" style="margin:0"></span>
+    </div>
+    <div id="seatRows"></div>
+    <pre id="trainLog"></pre>
+  </section>
+
+  <section>
+    <h2>Controller</h2>
+    <div class="row">
+      <label title="Which splitscreen seat this view is about. The top-level telemetry describes whichever car the CAMERA is on, so comparing it against seat 0's pad reports a permanent disagreement that is only the two halves being about different cars.">seat</label>
+      <select id="padSeat" onchange="tick()" style="max-width:70px">
+        <option value="0">0</option><option value="1">1</option>
+        <option value="2">2</option><option value="3">3</option>
+      </select>
+    </div>
+    <canvas id="padview" width="380" height="215"
+            style="width:100%;display:block"></canvas>
+    <div class="hint" id="padHint"></div>
+  </section>
+
+  <section>
+    <h2>Path</h2>
+    <canvas id="path" width="520" height="380"
+            style="width:100%;display:block;background:#080b10;
+                   border:1px solid var(--line);border-radius:9px"></canvas>
+    <div class="row" style="margin-top:10px">
+      <select id="traceSel" style="max-width:230px"></select>
+      <button id="traceBtn" onclick="toggleGhost()">Show</button>
+      <label class="toggle" id="heatTog"><input type="checkbox"
+        onchange="HEAT=this.checked"> all runs</label>
+    </div>
+    <div class="hint" id="pathHint"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Route editor</h2>
+    <canvas id="route" width="1040" height="560"
+            style="width:100%;display:block;background:#070a0e;
+                   border:1px solid var(--line);border-radius:9px;
+                   cursor:crosshair;touch-action:none"></canvas>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+      <button id="rtFit" onclick="RE.fit()">Fit</button>
+      <button id="rtPatch" onclick="RE.setMode('patch')">New patch</button>
+      <button id="rtDrag" onclick="RE.setMode('drag')">Move points</button>
+      <button id="rtDel" onclick="RE.setMode('del')">Delete points</button>
+      <label class="toggle"><input type="checkbox" id="rtJump"
+        onchange="RE.kind=this.checked?'jump':'road'"> draw as jump</label>
+      <span style="flex:1"></span>
+      <button id="rtSave" onclick="RE.save()">Save edits</button>
+      <button id="rtRevert" onclick="RE.revert()">Revert</button>
+    </div>
+    <div class="hint" id="rtHint">click near the line to start a patch, click
+      along the gap, click the line again to close it</div>
+  </section>
+
+  <section class="wide">
+    <h2>Network</h2>
+    <div class="nnwrap">
+      <canvas id="nn" height="460"></canvas>
+      <div class="nnhud">
+        <div class="nnq"><span class="k">critic Q</span><b id="nnQ">–</b>
+          <canvas id="nnSpark" width="150" height="30"></canvas></div>
+        <div id="nnOut"></div>
+      </div>
+    </div>
+    <div class="hint" id="nnHint"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Tuning</h2>
+    <div class="row">
+      <label>map</label>
+      <select id="tuneMap" onchange="loadConfig()" style="max-width:280px"></select>
+      <label style="min-width:auto" title="Explore and race keep separate config files per map. This picks which one you are editing. Defaults to whatever the running trainer is reading.">stage</label>
+      <select id="tuneProfile" onchange="profileChanged()" style="max-width:130px">
+        <option value="explore">explore</option>
+        <option value="race">race</option>
+      </select>
+      <button class="go" onclick="saveConfig()">Save</button>
+      <button onclick="loadConfig()">Revert</button>
+      <span class="hint" id="tuneStatus" style="margin:0"></span>
+      <span class="hint" id="tuneFile" style="margin:0"></span>
+    </div>
+    <div class="row">
+      <label style="min-width:auto" title="Write the current values to a different config file without touching the one you loaded. Name is the file basename as it appears in the map list, e.g. mytune.explore">save as</label>
+      <input type="text" id="tuneSaveAs" placeholder="e.g. mytune.explore" style="max-width:240px">
+      <button onclick="saveConfigAs()">Save as new</button>
+      <span class="hint" style="margin:0">creates a new file; the running trainer keeps reading its own</span>
+    </div>
+    <div class="row">
+      <label style="min-width:auto" title="Pick another map + stage. 'Load' pulls its values onto this screen (review, then Save). 'Copy to' writes the on-screen values out to it.">copy</label>
+      <select id="copyMap" style="max-width:240px"></select>
+      <select id="copyStage" style="max-width:110px">
+        <option value="race">race</option>
+        <option value="explore">explore</option>
+      </select>
+      <button onclick="copyConfigFrom()" title="Replace the values on screen with that file's. Nothing is written until you Save.">Load these values</button>
+      <button onclick="copyConfigTo()" title="Write the on-screen values out to that file.">Copy to it</button>
+      <span class="hint" style="margin:0" id="copyStatus"></span>
+    </div>
+    <div class="row" id="tuneToggles"></div>
+    <div class="tunegrid" id="tuneFields"></div>
+
+    <div class="grp">sections &amp; hints</div>
+    <div class="hint">A hint says <em>where to try something, and for how
+      long</em>. The warm-up performs it and the reward pays a little for it,
+      so a behaviour random exploration would never stumble into gets a fair
+      trial. Scope it by checkpoint section, by a place you drove to, by speed,
+      or any combination. Forced gas/brake/steer apply to the warm-up only.</div>
+    <div id="hintList"></div>
+    <div class="row">
+      <button onclick="addHint()">+ hint</button>
+      <span class="hint" style="margin:0">saved with the rest of the tuning</span>
+    </div>
+
+    <div class="grp">marks — places you drove to</div>
+    <div id="markList" class="hint">none yet</div>
+
+    <div class="grp">checkpoint sizes</div>
+    <div class="hint">The game exposes no dimensions for a checkpoint, so the
+      global half-width and height above are the default and these are the
+      exceptions, by gate index. A checkpoint that never counts is usually a
+      sizing problem.</div>
+    <div id="cpOverrides"></div>
+    <div class="row"><button onclick="addCpOverride()">+ checkpoint override</button></div>
+
+    <h2 style="margin-top:18px">Surfaces</h2>
+    <div class="hint" style="margin:0 0 10px">
+      Per-wheel, per-step reward for whatever each tyre is touching. Negative
+      is a penalty. <b>End episode</b> is usually what you want for "stop
+      crashing into the barriers" — a large per-step penalty just drowns out
+      lap time and teaches it the reward is broken. Untick it later to let the
+      car get close to the edges again. Needs <b>surfaces</b> switched on above.
+    </div>
+    <div class="surfgrid" id="tuneSurfaces"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Sections</h2>
+    <div class="row">
+      <button onclick="loadSplits()">Refresh</button>
+      <span class="hint" id="splitStatus" style="margin:0"></span>
+    </div>
+    <div class="hint">Per-section times, from every episode that got that far.
+      <strong>gap</strong> is median minus best — how much is sitting on the
+      table in that piece of track. The biggest gap is where to work. A low
+      <strong>reached</strong> is not a slow section, it is where the car keeps
+      dying, which is a different problem.</div>
+    <div id="splitTable"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Why it's changing</h2>
+    <div id="whyList" class="whyList"></div>
+    <div class="hint">Reward breakdown per episode plus SAC's own optimiser
+      state. Read the dominant term first: it is what the policy is actually
+      being shaped by, whatever you intended.</div>
+  </section>
+
+  <section>
+    <h2>Checkpoints &amp; snapshots</h2>
+    <div class="row">
+      <label>model</label>
+      <select id="arcModel" onchange="renderArchive()"></select>
+      <button onclick="loadArchive()">Refresh</button>
+    </div>
+    <div id="arcList" class="list" style="max-height:230px"></div>
+    <div class="hint">Restoring copies a snapshot over the live model; the
+      replay buffer is left alone, since off-policy experience stays valid for
+      whichever policy you roll back to. Stop the trainer first, then Start
+      with <b>resume</b> ticked.</div>
+  </section>
+
+  <section>
+    <h2>Saved runs</h2>
+    <div id="runsList" class="list" style="max-height:230px"></div>
+    <div class="hint">Real <code>.Replay.Gbx</code> files, lifted out of the
+      game's own autosave folder on every personal best before the next one
+      overwrites it. Traces cover the runs that got further without finishing.</div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function post(path, body) {
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body || {})});
+  return r.json();
+}
+const cmd = c => post('/api/cmd', {cmd:c});
+
+async function markHere() {
+  const name = ($('markName').value || '').trim();
+  if (!name) { alert('give the mark a name first'); return; }
+  const r = await post('/api/mark', {name});
+  if (r && r.ok) {
+    $('markName').value = '';
+    alert(`${name} = [${r.pos.join(', ')}]\n\nUse it in a hint as ` +
+          `"mark_from": "${name}"`);
+  } else {
+    alert('could not mark: ' + ((r && r.err) || 'no reply'));
+  }
+}
+
+function playTmx() {
+  const id = $('tmx').value.trim();
+  if (!id) return;
+  cmd('playmap https://trackmania.exchange/mapgbx/' + id);
+}
+
+let padTimer = null;
+function pad() {
+  const s = +$('steer').value, g = +$('gas').value, b = +$('brake').value;
+  $('steerV').textContent = s.toFixed(2);
+  $('gasV').textContent = g.toFixed(2);
+  $('brakeV').textContent = b.toFixed(2);
+  // Coalesce slider drags into one request per frame-ish.
+  clearTimeout(padTimer);
+  padTimer = setTimeout(() => post('/api/pad', {steer:s, gas:g, brake:b}), 30);
+}
+function padReset() {
+  $('steer').value = 0; $('gas').value = 0; $('brake').value = 0;
+  pad();
+}
+
+function recStart() {
+  const n = $('lineName').value.trim();
+  if (!n) { alert('Give the line a name first.'); return; }
+  post('/api/record/start', {name:n, mode:$('recMode').value,
+                             demo:$('recDemo').checked, idle:20,
+                             expect_time: window._expect || 0});
+}
+
+// -- replay picker ---------------------------------------------------------
+let pickTimer = null;
+function openPicker() {
+  $('picker').classList.add('open');
+  $('pickQ').focus();
+  searchReplays();
+}
+function closePicker() { $('picker').classList.remove('open'); }
+
+async function searchReplays() {
+  clearTimeout(pickTimer);
+  pickTimer = setTimeout(async () => {
+    const q = encodeURIComponent($('pickQ').value.trim());
+    let r;
+    try { r = await (await fetch('/api/replays?q=' + q)).json(); }
+    catch { return; }
+    const list = $('pickList');
+    if (!r.replays.length) {
+      list.innerHTML = '<div class="empty">No replays match.</div>';
+      return;
+    }
+    list.innerHTML = r.replays.map((x, i) =>
+      `<div class="item" onclick="pick(${i})">
+         <span class="nm" title="${esc(x.path)}">${esc(x.name)}</span>
+         <span class="tm">${x.time || ''}</span>
+         <span class="dt">${new Date(x.mtime*1000).toLocaleString()}</span>
+       </div>`).join('');
+    window._picks = r.replays;
+    if (r.total > r.replays.length)
+      list.innerHTML += `<div class="empty">${r.total - r.replays.length} more…
+                         refine the search.</div>`;
+  }, 120);
+}
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function pick(i) {
+  const x = window._picks[i];
+  window._expect = x.seconds || null;
+  applyPick(x.path, x.name, x.suggest);
+}
+function usePath() {
+  const p = $('pickPath').value.trim();
+  if (!p) return;
+  const m = p.match(/\((\d+)[_'](\d+)[_'']{1,2}(\d+)\)/);
+  window._expect = m ? (+m[1])*60 + (+m[2]) + (+m[3])/1000 : null;
+  const name = p.split('/').pop();
+  applyPick(p, name, name.replace(/\.(replay|ghost)\.gbx$/i,'')
+                          .split('_')[0].replace(/[^A-Za-z0-9]+/g,'-')
+                          .toLowerCase().replace(/^-|-$/g,''));
+}
+function applyPick(path, name, suggest) {
+  $('pickedName').textContent = name;
+  $('pickedName').title = path;
+  if (suggest) $('lineName').value = suggest;
+  // 'auto' takes whatever is being viewed. A replay may present with the same
+  // ui/spawn as a live run, in which case 'replay' mode would filter it all out.
+  $('recMode').value = 'auto';
+  closePicker();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePicker();
+});
+let LINE_INFO = [];
+
+// Match the controls to what the model being resumed was trained against.
+//
+// The .meta.json sidecar exists because a mismatch LOADS FINE and then means
+// something else: a model trained at 40Hz with on/off pedals will happily
+// resume at 20Hz with analogue ones, and every action it has learned is now
+// interpreted differently. Reading it here turns that from a warning you get
+// afterwards into a setting that is already right.
+//
+// Applied, not forced - the fields stay editable, because deliberately
+// changing one is a legitimate thing to do.
+async function loadModelList() {
+  try {
+    const j = await (await fetch('/api/archive')).json();
+    const dl = $('modelList');
+    if (dl && j.models) dl.innerHTML = j.models
+      .map(m => `<option value="${esc(m)}">`).join('');
+  } catch {}
+}
+
+async function loadModelSettings() {
+  const stage = $('stageSel').value;
+  let j;
+  try {
+    j = await (await fetch('/api/model?stage=' + encodeURIComponent(stage))).json();
+  } catch { return; }
+  const m = j && j.meta;
+  const hint = $('modelHint');
+  if (!m) {
+    if (hint) hint.textContent = j && j.exists
+      ? `${j.name}: no metadata - what it was trained against is unknown`
+      : `${j.name}: new model, nothing to resume`;
+    return;
+  }
+  // Only the settings the sidecar actually records.
+  if (m.instances && $('trInstances')) {
+    const want = String(m.instances);
+    if ([...$('trInstances').options].some(o => o.value === want))
+      $('trInstances').value = want;
+  }
+  // Applied, not forced - resuming at a different rate than the buffer was
+  // timed at is a real footgun, so pre-fill it right; the field stays editable.
+  if (m.control_hz && $('trControlHz')) $('trControlHz').value = m.control_hz;
+  if (m.gradient_steps && $('trGradSteps')) $('trGradSteps').value = m.gradient_steps;
+  const act = m.action || {};
+  const pedals = act.binary_gas ? 'on/off' : 'analogue';
+  if (hint) {
+    hint.innerHTML = `matched <b>${esc(j.name)}</b> &mdash; trained ` +
+      `${esc(String(m.saved || '?'))}, ${esc(String(m.control_hz))}Hz, ` +
+      `pedals ${pedals}, checkpoints by ${esc(String(m.cp_mode || '?'))}` +
+      (m.instances ? `, ${m.instances} instance(s)` : '');
+  }
+  savePrefs();
+}
+
+function resumeChanged() {
+  const fresh = !$('resume').checked;
+  const hint = $('modelHint');
+  if (hint && fresh) {
+    hint.innerHTML = '<span class="warn">starting from scratch</span> — '
+      + 'the existing model is archived first, not deleted. Give it a new '
+      + '<b>model</b> name to keep both training separately.';
+  } else {
+    loadModelSettings();
+  }
+  savePrefs();
+}
+
+function stageChanged() {
+  const explore = $('stageSel').value === 'explore';
+  $('lineRow').style.opacity = explore ? 0.45 : 1;
+  $('lineSel').disabled = explore;
+  $('stageHint').innerHTML = explore
+    ? 'Builds a line through the map’s own checkpoints and finish — works ' +
+      'on a track nobody has driven. Hand the result to race mode afterwards.'
+    : '';
+  if (!explore) checkLine();
+  loadModelSettings();
+}
+
+// A line recorded on another map puts the car hundreds of metres off it at
+// spawn, so every episode ends on step one. Say so before Start, not after
+// two thousand of them.
+function checkLine() {
+  if ($('stageSel').value === 'explore') return;
+  const info = LINE_INFO.find(l => l.name === $('lineSel').value);
+  const d = info && info.distance !== null ? ` (car is ${info.distance}m from it)` : '';
+  $('stageHint').innerHTML =
+    !info || info.matches === null
+      ? '<span class="hint">spawn a car to check this line belongs here</span>'
+      : info.matches
+      ? `<span style="color:var(--accent)">fits this track${esc(d)}</span>`
+      : `<span class="warn">not for this track${esc(d)} — every episode would ` +
+        'end instantly. Use explore mode, or record a line here.</span>';
+}
+
+// -- fleet -----------------------------------------------------------------
+//
+// N games feeding ONE model. Worth being precise about, because the obvious
+// alternative is wrong: running N copies of the trainer gives N separate
+// models each learning from a fraction of the data, and they cannot be
+// merged afterwards. This is more SIMULATION for one policy - N environments
+// filling one replay buffer, one set of weights updated from all of it.
+//
+// The hard limit is not this panel: one Ubisoft account can only be signed in
+// once, so N concurrent games need N accounts, each created by hand and signed
+// in once per Wine prefix. That part is deliberately not automated.
+
+let FLEET = [];
+
+function renderFleet() {
+  const want = +$('trInstances').value;
+  const rows = FLEET.slice(0, want);
+  if (want === 1) {
+    $('fleetRows').innerHTML = '';
+    $('fleetHint').textContent = '';
+    return;
+  }
+  const ready = rows.filter(r => r.ready).length;
+  $('fleetHint').innerHTML = ready === want
+    ? `<span class="ok">${ready}/${want} ready</span>`
+    : `<span class="warn">${ready}/${want} ready — run ` +
+      `<code>python3 tools/fleet.py --instances ${want}</code></span>`;
+
+  const dot = (up, port, what) =>
+    `<span class="pill ${up ? 'up' : 'down'}" title="${what} on ${port}">` +
+    `${what} ${port}</span>`;
+  $('fleetRows').innerHTML = rows.map(r => `
+    <div class="row fleetrow">
+      <label>instance ${r.instance}</label>
+      ${dot(r.pad_up, r.pad, 'pad')}
+      ${dot(r.plugin_up, r.plugin, 'plugin')}
+      ${dot(r.broker_up, r.broker, 'broker')}
+      <span class="hint" style="margin:0">${r.ready ? '' :
+        'needs its own game, signed in to its own account'}</span>
+    </div>`).join('') +
+    (want > 1 ? `<div class="hint">Each instance needs a separate running
+      game on its own Ubisoft account — the same account cannot be logged in
+      twice. Create those by hand, once each.</div>` : '');
+}
+
+async function trainStart() {
+  const stage = $('stageSel').value;
+  const line = $('lineSel').value;
+  if (stage === 'race' && !line) {
+    alert('Pick a reference line, or switch to explore mode.'); return;
+  }
+  const r = await post('/api/train/start', {
+    stage, line, steps:+$('steps').value, resume:$('resume').checked,
+    name: ($('trName').value || '').trim(),
+    control_hz:+$('trControlHz').value,
+    gradient_steps: ($('trGradSteps').value || '').trim(),
+    promote_to: ($('trPromote').value || '').trim(),
+    init_from: ($('trInitFrom').value || '').trim(),
+    gate_order: ($('trGateOrder').value || '').trim(),
+    max_offset:+$('tMaxOffset').value, stuck_speed:+$('tStuckSpeed').value,
+    stuck_seconds:+$('tStuckSecs').value, max_episode_s:+$('tEpCap').value,
+    w_weave:+$('tWeave').value, w_reversal:+$('tReversal').value,
+    cp_radius:+$('tCpRadius').value,
+    instances:+$('trInstances').value, bootstrap:$('trBootstrap').value,
+    seats:+$('trSeats').value,
+    handover:+$('trHandover').value,
+    handover_patience:+$('trPatience').value,
+    then_race:$('trThenRace').checked,
+    auto_rollback:$('trRollback').checked,
+  });
+  if (!r.ok) {
+    alert(r.err || 'could not start');
+    if (r.mismatch) $('stageSel').value = 'explore', stageChanged();
+  }
+}
+
+// The plugin's own cp fields are unusable - RaceWaypointTimes reads 0 in Time
+// Attack no matter how many you have passed. The panel counts them itself by
+// proximity to the map's checkpoint landmarks, which is what s.cp carries.
+function cpCount(s, d) {
+  if (s.cp_total) return `${s.cp} / ${s.cp_total}`;
+  const n = Math.max(d.cp ?? 0, d.cp_lap ?? 0);
+  return n ? `${n}?` : '-';
+}
+
+const UI = {0:'None',1:'Playing',2:'Intro',3:'Outro',4:'Podium',6:'EndRound',
+            7:'Presentation',8:'UIInteraction',11:'Finish'};
+
+function stat(k, v, frac) {
+  return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div>` +
+         (frac === undefined ? '' :
+          `<div class="bar"><i style="width:${Math.max(0,Math.min(1,frac))*100}%"></i></div>`) +
+         `</div>`;
+}
+
+function pill(label, ok) {
+  return `<span class="pill ${ok ? 'on' : 'off'}">${label}</span>`;
+}
+
+async function tick() {
+  let s;
+  try { s = await (await fetch('/api/status?seat=' + (($('padSeat')||{value:0}).value||0))).json(); }
+  catch { $('pills').innerHTML = pill('panel offline', false); return; }
+
+  $('pills').innerHTML =
+      pill('plugin', s.plugin) + pill('broker', s.broker) + pill('pad', s.pad) +
+      pill('venv', s.venv) +
+      pill(s.trainer.running ? 'training' : 'idle', s.trainer.running);
+
+  const d = s.latest;
+  if (!d) {
+    $('telem').innerHTML = stat('state', 'no data');
+    $('telemHint').textContent = s.broker
+        ? 'Broker connected but the plugin has sent nothing yet.'
+        : 'Start telemetry/broker.py.';
+  } else if (!d.car) {
+    // In splitscreen the top-level record describes whichever car the camera
+    // is on, and between seats that is often nothing at all - so "no car"
+    // here would be reported while four cars are driving. The seats are the
+    // truth in that mode.
+    const cars = (s.seats || []).filter(x => x.car).length;
+    if (cars) {
+      $('telem').innerHTML = stat('state', cars + ' cars (splitscreen)')
+                           + stat('ui', UI[d.ui] ?? d.ui);
+      $('telemHint').textContent =
+        'The camera is between seats, so the top-level record is empty. '
+        + 'Per-seat state is under Training.';
+    } else {
+      $('telem').innerHTML = stat('state','no car') + stat('ui', UI[d.ui] ?? d.ui);
+      $('telemHint').textContent = 'Waiting for a car - load a map and spawn.';
+    }
+  } else {
+    const kmh = (d.speed||0)*3.6;
+    $('telem').innerHTML =
+      stat('speed', kmh.toFixed(0)+' km/h', kmh/400) +
+      stat('gear', d.gear ?? '-') +
+      stat('rpm', Math.round(d.rpm||0), (d.rpm||0)/12000) +
+      stat('race time', ((d.race_time||0)/1000).toFixed(2)+'s') +
+      stat('cp', cpCount(s, d)) +
+      stat('steer', (d.in_steer||0).toFixed(2), ((d.in_steer||0)+1)/2) +
+      stat('gas', (d.in_gas||0).toFixed(2), d.in_gas||0) +
+      stat('brake', d.in_brake ? 'ON' : 'off', d.in_brake ? 1 : 0) +
+      stat('ground', d.ground ? 'yes' : 'AIR') +
+      stat('skid', d.skidding ?? 0, (d.skidding||0)/4) +
+      stat('adherence', (d.adherence ?? 1).toFixed(2), d.adherence ?? 1) +
+      stat('ui', UI[d.ui] ?? d.ui);
+    const age = s.telemetry_age;
+    $('telemHint').textContent = age > 1
+        ? `Last sample ${age.toFixed(1)}s ago - stream may have stalled.` : '';
+  }
+
+  $('padWarn').textContent = s.trainer.running
+      ? 'Trainer is driving; manual input will fight it.' : '';
+
+  drawPad(s);
+  drawPath(s);
+
+  LINE_INFO = s.line_info || [];
+  const sel = $('lineSel');
+  const sig = JSON.stringify(LINE_INFO);
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    const keep = sel.value;
+    sel.innerHTML = LINE_INFO.map(l =>
+      `<option value="${esc(l.name)}">${esc(l.name)}` +
+      `${l.matches === false ? '  (other map)' : ''}</option>`).join('');
+    if (s.lines.includes(keep)) sel.value = keep;
+    applyWanted();
+    checkLine();
+  }
+
+  FLEET = s.fleet || [];
+  renderFleet();
+  renderSeats(s.seats);
+  $('trainLog').textContent = s.trainer.log || '(no training output yet)';
+  $('recLog').textContent = s.recorder.log || '(not recording)';
+  $('trStart').disabled = s.trainer.running || !s.venv;
+  $('trStop').disabled = !s.trainer.running;
+  $('recStart').disabled = s.recorder.running;
+  $('recStop').disabled = !s.recorder.running;
+  // The launch form stays editable while a trainer runs - Start is already
+  // disabled, so you can only PREP the next run here, never disturb the live
+  // one. The Tuning section below hot-reloads into the running trainer on Save.
+}
+
+// -- controller overlay ----------------------------------------------------
+//
+// Two sources, deliberately. The bars are what the GAME received (the plugin's
+// in_steer / in_gas / in_brake), the outline ring is what the PAD is holding.
+// If they diverge, the pad has stopped reaching the game — which is a failure
+// mode that otherwise only shows up as "the car does nothing" an hour later.
+
+// Rolling agreement between what the pad sent and what the game received.
+// Two seconds or so at the panel's poll rate: long enough for transport lag
+// to average out, short enough to notice a pad that has actually stopped.
+const PAD_WINDOW = 20;
+const PADHIST = [];
+
+function drawPad(s) {
+  const cv = $('padview'), ctx = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+  // The seat's own applied input, not the camera car's. Without this the
+  // comparison below is between two different cars and disagrees forever.
+  const seat = +($('padSeat') || {value: 0}).value || 0;
+  const seats = (s.latest || {}).players || [];
+  const mine = seats.find(x => x.slot === seat);
+  const g = mine || s.latest || {}, p = s.pad_state || {};
+  const got = {steer: g.in_steer || 0, gas: g.in_gas || 0,
+               brake: g.in_brake ? 1 : 0};
+  const sent = {steer: p.steer || 0, gas: p.gas || 0, brake: p.brake || 0};
+  const held = new Set(p.buttons || []);
+
+  const trig = (x, label, v, want) => {
+    const bh = 96, y = 30;
+    ctx.fillStyle = '#141a22';
+    ctx.beginPath(); ctx.roundRect(x, y, 26, bh, 5); ctx.fill();
+    ctx.fillStyle = 'rgba(77,212,172,.85)';
+    ctx.beginPath();
+    ctx.roundRect(x, y + bh * (1 - v), 26, bh * v || 0.001, 5); ctx.fill();
+    // Where the pad says it is, as a line - usually sits on top of the fill.
+    ctx.strokeStyle = 'rgba(227,179,65,.9)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 3, y + bh * (1 - want)); ctx.lineTo(x + 29, y + bh * (1 - want));
+    ctx.stroke();
+    ctx.fillStyle = '#7d8794'; ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + 13, y + bh + 14);
+    ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(v.toFixed(2), x + 13, y - 8);
+  };
+  trig(24, 'BRAKE', got.brake, sent.brake);
+  trig(64, 'GAS', got.gas, sent.gas);
+
+  // Steering: a track with the game's value as a filled bar from centre.
+  const sx = 122, sw = 150, sy = 62;
+  ctx.fillStyle = '#141a22';
+  ctx.beginPath(); ctx.roundRect(sx, sy, sw, 22, 6); ctx.fill();
+  const mid = sx + sw / 2;
+  ctx.fillStyle = 'rgba(77,212,172,.85)';
+  ctx.fillRect(Math.min(mid, mid + got.steer * sw / 2), sy + 3,
+               Math.abs(got.steer) * sw / 2, 16);
+  ctx.strokeStyle = '#242c38'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(mid, sy - 4); ctx.lineTo(mid, sy + 26); ctx.stroke();
+  ctx.strokeStyle = 'rgba(227,179,65,.9)'; ctx.lineWidth = 1.5;
+  const wx = mid + sent.steer * sw / 2;
+  ctx.beginPath(); ctx.moveTo(wx, sy - 4); ctx.lineTo(wx, sy + 26); ctx.stroke();
+  ctx.fillStyle = '#7d8794'; ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'center'; ctx.fillText('STEER', mid, sy + 40);
+  ctx.fillStyle = '#e6edf3'; ctx.font = '11px ui-monospace, monospace';
+  ctx.fillText(got.steer.toFixed(2), mid, sy - 10);
+
+  // Face buttons, lit while actually held.
+  const face = [['y', 152, 128], ['x', 130, 150], ['b', 174, 150], ['a', 152, 172]];
+  for (const [name, bx, by] of face) {
+    const on = held.has(name);
+    ctx.fillStyle = on ? 'rgba(77,212,172,.9)' : '#141a22';
+    ctx.beginPath(); ctx.arc(bx, by, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = on ? '#4dd4ac' : '#242c38'; ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = on ? '#08140f' : '#7d8794';
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.fillText(name.toUpperCase(), bx, by + 4);
+  }
+
+  ctx.fillStyle = '#2b3542'; ctx.font = 'bold 13px ui-monospace, monospace';
+  ctx.textAlign = 'right'; ctx.fillText('TAS', w - 14, h - 12);
+
+  // Whether the pad is actually reaching the game.
+  //
+  // The naive version of this check flickered constantly, and it was the
+  // CHECK that was wrong, not the pad. The two numbers come from two
+  // independently sampled streams - the pad's own state, and a telemetry
+  // frame from the game - read tens of milliseconds apart while a 40Hz
+  // policy changes the action every 25ms. During any fast input they SHOULD
+  // disagree; that is transport delay, not a fault. Comparing them
+  // instant-to-instant therefore alarms on the normal case, which is exactly
+  // what "it keeps saying no controller input but it's flashing on and off"
+  // looks like.
+  //
+  // So judge a window, not a sample. A pad that has genuinely stopped
+  // reaching the game disagrees on essentially every frame for as long as you
+  // care to watch; transport lag disagrees on a minority of them. Only a
+  // sustained majority counts, and it clears itself once frames agree again.
+  const bad = Math.abs(got.steer - sent.steer) > 0.25
+           || Math.abs(got.gas - sent.gas) > 0.5;
+  PADHIST.push(bad ? 1 : 0);
+  if (PADHIST.length > PAD_WINDOW) PADHIST.shift();
+  const rate = PADHIST.reduce((a, b) => a + b, 0) / PADHIST.length;
+  const drift = PADHIST.length >= PAD_WINDOW * 0.6 && rate > 0.8;
+
+  $('padHint').innerHTML = !s.pad
+    ? '<span class="warn">pad server not reachable</span>'
+    : drift
+    ? '<span class="warn">the game is not receiving what the pad is sending' +
+      ' — ' + Math.round(rate * 100) + '% of the last ' + PADHIST.length +
+      ' frames disagree. Check the game has focus and the controller is ' +
+      'bound</span>'
+    : 'bars are what the <b>game received</b>; amber marks are what the ' +
+      '<b>pad is sending</b>. Brief gaps are transport delay and are normal ' +
+      '— only a sustained disagreement is a fault.';
+}
+
+// -- path view -------------------------------------------------------------
+
+let LINEPTS = null, LINEMETA = null, TRAIL = [], GHOST = null, HEAT = false;
+let HEATRUNS = [];
+
+async function loadLine() {
+  try {
+    const j = await (await fetch('/api/line')).json();
+    LINEMETA = j;
+    // Only keep a line that belongs to the track loaded right now. A mismatch
+    // (or no points) clears it so the panel never draws one track's line over
+    // another's gates - the checkpoints below are always the live ones.
+    LINEPTS = (j.points && j.points.length && !j.mismatch) ? j.points : null;
+  } catch {}
+}
+
+function fitTransform(cv, pts) {
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+  for (const [x, z] of pts) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const pad = 18;
+  const sx = (cv.width - pad * 2) / Math.max(x1 - x0, 1);
+  const sz = (cv.height - pad * 2) / Math.max(z1 - z0, 1);
+  const s = Math.min(sx, sz);
+  // Centre whichever axis has slack, so a long thin track isn't jammed to one
+  // edge of the box.
+  const ox = pad + (cv.width - pad * 2 - (x1 - x0) * s) / 2;
+  const oz = pad + (cv.height - pad * 2 - (z1 - z0) * s) / 2;
+  return ([x, z]) => [ox + (x - x0) * s, oz + (z - z0) * s];
+}
+
+function drawPath(s) {
+  const cv = $('path'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const cps = (LINEMETA && LINEMETA.checkpoints) || [];
+  // With no line for the current track, still frame the view on the live
+  // gates so the checkpoints + car trail are usable on their own.
+  const framePts = LINEPTS || (cps.length ? cps : null);
+  if (!framePts) {
+    ctx.fillStyle = '#4d5866'; ctx.font = '12px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText((LINEMETA && LINEMETA.mismatch)
+      ? 'no line for this track yet'
+      : 'record a reference line first', cv.width / 2, cv.height / 2);
+    return;
+  }
+  const T = fitTransform(cv, framePts);
+
+  const poly = (pts, style, width, alpha) => {
+    if (pts.length < 2) return;
+    ctx.strokeStyle = style; ctx.lineWidth = width;
+    ctx.globalAlpha = alpha ?? 1;
+    ctx.beginPath();
+    pts.forEach((p, i) => { const q = T(p); i ? ctx.lineTo(...q) : ctx.moveTo(...q); });
+    ctx.stroke(); ctx.globalAlpha = 1;
+  };
+
+  if (LINEPTS) {
+    poly(LINEPTS, '#2b3542', 6);        // the reference line, as a road
+    poly(LINEPTS, '#141a22', 3);
+  }
+
+  if (HEAT) for (const r of HEATRUNS) poly(r, '#4dd4ac', 1, 0.13);
+  if (GHOST) poly(GHOST.map(p => [p[0], p[1]]), '#a371f7', 2, 0.9);  // violet - distinct from the amber lookahead dots
+
+  for (const c of (LINEMETA.checkpoints || [])) {
+    const q = T(c);
+    ctx.strokeStyle = '#4dd4ac'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.stroke();
+  }
+  if (LINEMETA.finish) {
+    const q = T(LINEMETA.finish);
+    ctx.fillStyle = '#f4645f';
+    ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fill();
+  }
+
+  // The SEAT's car, not the camera's. In splitscreen the top-level record is
+  // whichever car the camera is on, and between seats it carries no position
+  // at all - so the trail reported "no car" about a game with four of them.
+  // Same fix as the controller view and the header state.
+  const pseat = +(($('padSeat') || {}).value) || 0;
+  const pmine = ((s.latest || {}).players || []).find(x => x.slot === pseat);
+  const d = (pmine && pmine.car) ? Object.assign({}, s.latest, pmine) : s.latest;
+  if (d && d.car && d.pos) {
+    const here = [d.pos[0], d.pos[2]];
+    TRAIL.push(here);
+    if (TRAIL.length > 400) TRAIL.shift();
+    poly(TRAIL, '#4dd4ac', 2, 0.9);
+
+    // The six lookahead points the network is actually being fed - its entire
+    // spatial belief, drawn. Found the same way the env does it: nearest
+    // sample on the line, then walk forward by arc length.
+    let best = 0, bd = 1e18;
+    for (let i = 0; i < LINEPTS.length; i++) {
+      const dx = LINEPTS[i][0] - here[0], dz = LINEPTS[i][1] - here[1];
+      const dd = dx * dx + dz * dz;
+      if (dd < bd) { bd = dd; best = i; }
+    }
+    for (const m of [5, 10, 17, 27, 40, 60]) {
+      const j = Math.min(best + Math.round(m / 2), LINEPTS.length - 1);  // 2m spacing
+      const q = T(LINEPTS[j]);
+      ctx.fillStyle = 'rgba(227,179,65,.8)';
+      ctx.beginPath(); ctx.arc(q[0], q[1], 2.4, 0, 7); ctx.fill();
+    }
+    const q = T(here);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(q[0], q[1], 4, 0, 7); ctx.fill();
+    // The line on screen can belong to a DIFFERENT map than the one loaded -
+    // the panel picks a line file, the game picks a track, and nothing forces
+    // them to agree. Silently drawing the wrong track's line is how a corner
+    // map comes out as a dead straight line with no gates.
+    const lm = s.landmarks || {};
+    const liveMap = (s.latest || {}).map || lm.map;
+    const lineMap = (LINEMETA || {}).map;
+    const wrongMap = liveMap && lineMap && liveMap !== lineMap;
+    $('pathHint').innerHTML =
+      (wrongMap
+        ? `<span class="warn">the line drawn here was recorded on a `
+          + `different map (${esc(String(lineMap))}) — the track loaded is `
+          + `${esc(String(liveMap))}</span><br>`
+        : '') +
+      `<b>white</b> car · <b style="color:#e3b341">amber</b> the 6 lookahead ` +
+      `points it is fed · <b style="color:#4dd4ac">rings</b> checkpoints` +
+      (GHOST ? ` · <b style="color:#a371f7">violet line</b> saved run` : '');
+  } else {
+    TRAIL = [];
+    const nseats = ((s.latest || {}).players || []).filter(x => x.car).length;
+    $('pathHint').textContent = nseats
+      ? `seat ${pseat} has no car yet — ${nseats} other seat(s) do. Pick a `
+        + `different seat above the controller view.`
+      : 'no car — the trail starts when one spawns.';
+  }
+}
+
+async function loadTraces(uid) {
+  if (!uid) return;
+  try {
+    const j = await (await fetch('/api/trace?map=' + encodeURIComponent(uid))).json();
+    const sel = $('traceSel'), sig = JSON.stringify(j.traces);
+    if (sel.dataset.sig === sig) return;
+    sel.dataset.sig = sig;
+    sel.innerHTML = (j.traces || []).length
+      ? j.traces.map(t => `<option>${esc(t.replace('.json',''))}</option>`).join('')
+      : '<option value="">no saved runs yet</option>';
+  } catch {}
+}
+
+async function toggleGhost() {
+  if (GHOST) { GHOST = null; HEATRUNS = []; $('traceBtn').textContent = 'Show'; return; }
+  const uid = (CONFIG_META || {}).live_map;
+  const name = $('traceSel').value;
+  if (!uid || !name) return;
+  const j = await (await fetch(
+    `/api/trace?map=${encodeURIComponent(uid)}&name=${encodeURIComponent(name)}.json`)).json();
+  GHOST = j.samples || [];
+  $('traceBtn').textContent = 'Hide';
+  // Pull a handful more for the heatmap overlay, newest first.
+  HEATRUNS = [];
+  for (const t of (j.traces || []).slice(0, 12)) {
+    try {
+      const r = await (await fetch(
+        `/api/trace?map=${encodeURIComponent(uid)}&name=${encodeURIComponent(t)}`)).json();
+      if (r.samples?.length) HEATRUNS.push(r.samples.map(p => [p[0], p[1]]));
+    } catch {}
+  }
+}
+
+// -- network view ----------------------------------------------------------
+//
+// Everything drawn here is real: node brightness is the neuron's actual
+// activation on the observation the policy is acting on right now, and every
+// edge is one of the strongest real weights into that neuron, tinted by its
+// true sign. Nothing is animated for effect.
+
+const QHIST = [];
+let NN_LAST = 0;
+
+const clamp01 = v => Math.max(0, Math.min(1, v));
+// Teal for positive, red for negative - the same language as the reward chips.
+const sgnColor = (v, a) => v >= 0
+  ? `rgba(77,212,172,${a})` : `rgba(244,100,95,${a})`;
+
+// Asymmetric margins: the input column is labelled to its left and the output
+// column to its right, so equal padding clipped both ends of the text.
+const MARGIN = {left: 76, right: 78, top: 26, bottom: 22};
+
+function nodeXY(col, i, n, w, h) {
+  const x0 = MARGIN.left, x1 = w - MARGIN.right;
+  const y0 = MARGIN.top, y1 = h - MARGIN.bottom;
+  return [x0 + col * ((x1 - x0) / 3),
+          n === 1 ? (y0 + y1) / 2 : y0 + i * ((y1 - y0) / Math.max(n - 1, 1))];
+}
+
+async function drawNN() {
+  const cv = $('nn'), ctx = cv.getContext('2d');
+  let d;
+  try { d = await (await fetch('/api/nn')).json(); } catch { return; }
+
+  // Tall enough that the input labels never collide: 22 groups at 9px need
+  // room, and a short canvas was cramming them together.
+  const rows = Math.max((d.groups || []).length, 24);
+  const wantH = Math.max(430, MARGIN.top + MARGIN.bottom + rows * 19);
+  const w = cv.clientWidth || 900;
+  if (cv.width !== w) cv.width = w;
+  if (cv.height !== wantH) cv.height = wantH;
+  const h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (d.idle || !d.hidden) {
+    ctx.fillStyle = '#4d5866';
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('no trainer running — start training to watch the policy think',
+                 w / 2, h / 2);
+    $('nnHint').textContent = '';
+    $('nnOut').innerHTML = '';
+    return;
+  }
+
+  const stale = (Date.now() / 1000 - d.t) > 3;
+  const wiring = d.wiring || {edges: {l0: [], l1: [], out: []}};
+  const obs = d.obs || [], hid = d.hidden;
+  // Draw what the NETWORK computed. The action actually sent is random during
+  // warm-up and noisy under exploration, so showing it here would label the
+  // picture with a number the drawn network did not produce.
+  const act = d.policy_action || d.action || [];
+
+  // Inputs are drawn one node per GROUP, not per scalar: 90 dots in a column
+  // is unreadable, and the groups are what you actually reason about. Each
+  // group's node carries the mean magnitude of its slice.
+  const groups = [], gIndex = new Array(obs.length);
+  let at = 0;
+  for (const [name, count] of (d.groups || [])) {
+    let sum = 0;
+    for (let i = at; i < at + count && i < obs.length; i++) {
+      sum += Math.abs(obs[i]); gIndex[i] = groups.length;
+    }
+    groups.push({name, v: count ? sum / count : 0,
+                 signed: obs[at] || 0, at, count});
+    at += count;
+  }
+
+  const cols = [groups.length, hid[0]?.length || 0,
+                hid[1]?.length || 0, act.length];
+  const pos = cols.map((n, c) =>
+    Array.from({length: n}, (_, i) => nodeXY(c, i, n, w, h)));
+
+  // Edges first, so nodes sit on top of them.
+  const edge = (from, to, weight, drive) => {
+    if (!from || !to) return;
+    const a = clamp01(Math.abs(weight) * 0.35 + drive * 0.55) * 0.72;
+    if (a < 0.02) return;
+    ctx.strokeStyle = sgnColor(weight, a);
+    ctx.lineWidth = 0.5 + Math.min(Math.abs(weight), 2) * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(from[0], from[1]);
+    const mx = (from[0] + to[0]) / 2;
+    ctx.bezierCurveTo(mx, from[1], mx, to[1], to[0], to[1]);
+    ctx.stroke();
+  };
+
+  (wiring.edges.l0 || []).forEach((ins, j) => ins.forEach(([oi, wt]) => {
+    const g = gIndex[oi];
+    if (g === undefined) return;
+    edge(pos[0][g], pos[1][j], wt, clamp01(Math.abs(obs[oi] || 0)));
+  }));
+  (wiring.edges.l1 || []).forEach((ins, j) => ins.forEach(([pi, wt]) =>
+    edge(pos[1][pi], pos[2][j], wt, clamp01(Math.abs(hid[0]?.[pi] || 0)))));
+  (wiring.edges.out || []).forEach((ins, j) => ins.forEach(([pi, wt]) =>
+    edge(pos[2][pi], pos[3][j], wt, clamp01(Math.abs(hid[1]?.[pi] || 0)))));
+
+  const dot = (p, v, r0, label, align) => {
+    const mag = clamp01(Math.abs(v));
+    const r = r0 + mag * r0 * 1.1;
+    const grd = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], r * 2.6);
+    grd.addColorStop(0, sgnColor(v, 0.34 * mag));
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(p[0], p[1], r * 2.6, 0, 7); ctx.fill();
+    ctx.fillStyle = sgnColor(v, 0.28 + 0.72 * mag);
+    ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.fill();
+    if (label) {
+      ctx.fillStyle = '#7d8794';
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textAlign = align;
+      ctx.fillText(label, p[0] + (align === 'right' ? -r - 6 : r + 6), p[1] + 3);
+    }
+  };
+
+  groups.forEach((g, i) => dot(pos[0][i], g.v || g.signed, 3.2, g.name, 'right'));
+  hid[0]?.forEach((v, i) => dot(pos[1][i], v, 2.6));
+  hid[1]?.forEach((v, i) => dot(pos[2][i], v, 2.6));
+  act.forEach((v, i) => dot(pos[3][i], v, 5, d.labels?.[i], 'left'));
+
+  // Outputs, decoded the same way the env decodes them: steer is [-1,1],
+  // the pedals are remapped from [-1,1] to [0,1].
+  $('nnOut').innerHTML = act.map((v, i) => {
+    const name = d.labels?.[i] || i;
+    const isSteer = name === 'steer';
+    const val = isSteer ? v : (v + 1) / 2;
+    const frac = isSteer ? (v + 1) / 2 : val;
+    return `<div class="obar"><span class="t">${esc(name)}</span>
+      <span class="m"><i style="left:${isSteer ? Math.min(50, frac*100) : 0}%;
+        width:${isSteer ? Math.abs(frac-0.5)*100 : frac*100}%"></i></span>
+      <span class="v">${val.toFixed(2)}</span></div>`;
+  }).join('');
+
+  if (d.q !== null && d.q !== undefined) {
+    // An untrained critic sits near zero and one decimal hides all the
+    // movement, so scale the precision to the magnitude.
+    const mag = Math.abs(d.q);
+    $('nnQ').textContent = d.q.toFixed(mag < 1 ? 3 : mag < 10 ? 2 : 1);
+    if (d.step !== NN_LAST) { QHIST.push(d.q); if (QHIST.length > 150) QHIST.shift(); }
+    drawSpark();
+  }
+  NN_LAST = d.step;
+
+  const drawn = hid.map(l => l.length).filter(n => n).join(' + ');
+  const parts = [`step ${(d.step || 0).toLocaleString()}`,
+                 `${obs.length} inputs grouped into ${groups.length}`];
+  parts.push(drawn
+    ? `${drawn} of ${(wiring.widths || []).join(' + ')} hidden neurons sampled`
+    : 'hidden layers unavailable');
+  parts.push(`edges are the ${(wiring.edges.l0?.[0]?.length) || 3} strongest ` +
+             `real weights into each, teal positive / red negative`);
+  $('nnHint').innerHTML = stale
+    ? '<span class="warn">stream is stale — the trainer may have stopped</span>'
+    : (d.warmup ? '<span class="warn">warm-up: SAC is still sending random ' +
+                  'actions, so the outputs below are what the network ' +
+                  '<i>would</i> do, not what the car is doing</span><br>' : '')
+      + parts.join(' · ');
+}
+
+function drawSpark() {
+  const cv = $('nnSpark'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (QHIST.length < 2) return;
+  const lo = Math.min(...QHIST), hi = Math.max(...QHIST), span = hi - lo || 1;
+  ctx.strokeStyle = '#4dd4ac'; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  QHIST.forEach((q, i) => {
+    const x = i / (QHIST.length - 1) * cv.width;
+    const y = cv.height - 2 - ((q - lo) / span) * (cv.height - 4);
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// -- tuning ----------------------------------------------------------------
+
+// Fields are generated from whatever the config actually contains, so a knob
+// added to env/config.py shows up here without touching this file. The table
+// only supplies wording and step size.
+const FIELD = {
+  'episode.max_episode_s': ['episode cap (s)', 1, 'Cut the episode off after this long. Shorter means more attempts per hour.'],
+  'reset.mode':            ['reset mode', null, 'giveup skips the ~8s intro. restart reloads the map.'],
+  'reset.button':          ['give-up button', null, 'Pad button bound to Give up, used mid-run.'],
+  'reset.finish_button':   ['finish button', null, 'Takes "Improve" on the finish screen. B does nothing there.'],
+  'reset.hold_ms':         ['hold (ms)', 10, 'How long the button is held down.'],
+  'reset.settle_ms':       ['settle (ms)', 50, 'Wait before pressing after a run ends. Raise this if resets get missed — it grows on each retry.'],
+  'reset.retries':         ['retries', 1, 'Button attempts before paying for a full restart.'],
+  'reset.finish_fallback_after': ['improve after', 1, 'Give-up attempts on the finish screen before falling back to Improve. Improve always works but replays the ~8s intro, so it is the fallback, not the first try.'],
+  'reset.quick_timeout':   ['give-up wait (s)', 0.1, 'How long to wait for a give-up to land. A respawn is well under a second, so keep this short — failed attempts are cheap to retry.'],
+  'reset.finish_timeout':  ['improve wait (s)', 1, 'How long to wait after pressing Improve. Must exceed the intro (~8s) or the ladder retries on top of a reset that is already running.'],
+  'reset.skip_intro':      ['skip intro', 1, 'Mash a button through the intro fly-in instead of sitting through it. 1 on, 0 off.'],
+  'reset.skip_button':     ['skip button', null, 'Any button skips the intro; this is the one used.'],
+  'reset.skip_interval_ms':['skip every (ms)', 25, 'How often to press while the intro is playing.'],
+  // Stored in m/s to match the telemetry, but edited in km/h - that is the
+  // unit on the speedo and on this panel, and mentally converting every time
+  // is how you end up setting it 3.6x wrong.
+  'stuck.speed':           ['stuck below (km/h)', 0.5, 'Slower than this counts as not moving. Stored internally in m/s.', 3.6],
+  'stuck.seconds':         ['stuck for (s)', 0.5, 'How long it must stay that slow before the episode ends.'],
+  'line.max_offset':       ['off-line limit (m)', 1, 'Metres from the reference line before the episode ends.'],
+  'line.soft_offset':      ['free corridor (m)', 1, 'How far it may stray from the reference line for free. This is distance from the line, NOT sliding — nothing here penalises drifting the car.'],
+  'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor. Raising this makes it copy your reference lap more closely, which also caps how much faster than you it can get. Widen the corridor instead if you want it to find its own line.'],
+  'line.cp_mode':          ['checkpoint test', null, 'gate = the car must CROSS THE PLANE of the checkpoint, inside its width and height, which is what the game itself requires. sphere = the old "be within N metres" test, which credited a checkpoint for driving past it on the road alongside.'],
+  'line.cp_half_width':    ['gate half-width (m)', 1, 'Half the checkpoint gate\u2019s width. A checkpoint block is 32m wide, so 16 is the block itself; a little slack costs nothing because the plane crossing is doing the real work.'],
+  'line.cp_height':        ['gate height (m)', 1, 'How far above or below the gate still counts. One grid level is 8m, so this stops a road stacked over the checkpoint collecting it from above.'],
+  'line.cp_radius':        ['checkpoint radius (m)', 1, 'Only used by the "sphere" test. How close counts as taking a checkpoint.'],
+  'reward.w_progress':     ['progress weight', 0.1, 'Reward per metre gained along the line. The main signal — leave at 1.'],
+  'reward.step_cost':      ['step cost', 0.005, 'Charged every step. This is what makes it want to be quick.'],
+  'reward.finish_bonus':   ['finish bonus', 10, 'One-off for completing the track.'],
+  'reward.cp_bonus':     ['checkpoint bonus', 1, "Paid once for each checkpoint the first time it is taken - re-crossing pays nothing. Earns its place most in explore mode, where the line is provisional and progress along it can reward heading roughly the right way while the car misses the gate. Try about a quarter of the finish bonus."],
+  'reward.off_line_penalty':['off-line penalty', 5, 'One-off when the episode ends off the line or on a killer surface.'],
+  'reward.stuck_penalty':  ['stuck penalty', 5, 'One-off when the episode ends stuck.'],
+  'reward.w_weave':        ['weave penalty', 0.01, 'Per unit of steering change. Punishes brute-force twitching. Needs "weave" on.'],
+  'reward.w_reversal':     ['flip penalty', 0.01, 'Per full steering sign flip at speed. CAREFUL: a neoslide looks exactly like this from the outside, so raising it can train the technique out. Prefer the weave penalty.'],
+  'reward.w_turbo_use':    ['booster bonus', 0.01, 'Reward for throttle while on a booster. Carrot, not a rule — keep it small or it farms boosters instead of racing.'],
+  'reward.w_air':          ['airtime penalty', 0.01, 'Per step with no wheel on the ground.'],
+  'reward.par_speed':      ['par speed (km/h)', 5, 'Break-even speed. Above 0 this replaces the flat step cost with one measured in the same units as progress, so driving at par earns nothing, faster earns and slower actively loses. For roughly a 2:1 progress-to-time ratio at a target speed, set this to half of it. 0 keeps the flat step cost.', 3.6],
+  'reward.charge_unused_time': ['charge unused time', 1, 'Charge a FAILED episode for the time it did not use. Without this a per-step time cost makes crashing profitable — dying at step 100 of 1800 saves 1700 steps of charge, worth far more than any crash penalty, so it learns to drive into the nearest wall. A finish is never charged. 1 on, 0 off.'],
+  'reward.w_gear':         ['gear bonus', 0.01, 'Per step, scaled by gear / top gear. Only paid once the gear has been HELD for the hold time below, so flip-flopping between two gears earns nothing at all and there is nothing to farm. Keep it small: gear is a proxy for speed and progress already pays for speed.'],
+  'reward.gear_hold_steps':['gear hold (steps)', 1, 'How long a gear must be held before it pays. This is the anti-flip-flop rule — 8 steps is 0.2s at 40Hz.'],
+  'reward.top_gear':       ['top gear', 1, 'Gear that counts as full marks.'],
+  'reward.w_downshift':    ['downshift penalty', 0.01, 'Charged for dropping a gear. Leave at 0 unless fighting a lift-off habit — downshifting is correct into a slow corner and punishing it teaches it not to brake.'],
+  'reward.w_gas':          ['throttle bonus', 0.005, 'Per step with the throttle down. This is the "just accelerate" prior — the thing a person tries first that uniform-random exploration almost never produces.'],
+  'reward.w_accel':        ['acceleration bonus', 0.01, 'Per m/s actually gained. Pays for the RESULT rather than the pedal, so holding the throttle against a wall earns the throttle bonus and not this one.'],
+  'reward.w_both_pedals':  ['both-pedals penalty', 0.01, 'Charged when gas and brake are both down. Physically just slow, but a common local optimum for a binary throttle.'],
+  'speedslide.w':          ['slide reward', 0.01, "Per step, times a 0-1 score that peaks across SDHelper's green band (19-22km/h sideways on road above 400km/h) and tapers to nothing at the orange edges."],
+  'speedslide.w_blue':     ['not-sliding penalty', 0.01, "Per step when the car is fast enough to be sliding usefully and isn't - SDHelper's blue. Leave at 0 until the reward above is working on its own."],
+  'speedslide.speed_floor_kmh': ['speed floor override (km/h)', 10, "0 means use SDHelper's own per-surface floor: 400km/h on road, 200 on grass and dirt. Set it to test a slide reward on a car that cannot reach 400 yet."],
+  'action.binary_gas':     ['throttle on/off', 1, 'Threshold the throttle to fully on or fully off. TM2020\u2019s throttle is a switch in practice and the fast line is nearly always one of the two ends, so a continuous pedal just hands the optimiser a continuum of slower options. 1 on, 0 off.'],
+  'action.binary_brake':   ['brake on/off', 1, 'Same for the brake.'],
+  'action.gas_threshold':  ['throttle threshold', 0.05, 'Network output above this means throttle on. 0 is the middle of its range.'],
+  'action.brake_threshold':['brake threshold', 0.05, 'Network output above this means brake on. Must be BELOW 1.0 — the output is clipped to [-1,1], so 1.0 or higher switches the brake off entirely, and that also removes reverse (TM2020 reverses on the brake when stationary), so a car wedged on a wall can never back off. 0.7 keeps braking rare without disabling it.'],
+  'action.steer_levels':   ['steering notches', 1, 'Snap steering to fixed notches instead of a continuum. 10 = every 10%, like ten steering keys per side; 1 = {-1,0,+1} (pure keyboard); 0 = continuous. Measured on the continuous setting: the command changed sign between 41% of consecutive control steps and swung more than lock-to-lock on 22% — the car was sawing at the wheel 8 times a second and barely turning.'],
+  'action.steer_rate':     ['steering ramp (units/s)', 1, 'How fast the commanded steering may move, in units/s, where lock-to-lock is 2.0. 8.0 reaches full lock in about 125ms; 0 means no limit. This is per STAGE, not a schedule: the explorer is capped because a steady wheel finds the route better, and the racer runs at 0 because instant lock-to-lock flicks are part of TM technique. The racer starts from fresh weights at handover, so the limit is never pulled out from under a policy that learned with it.'],
+  'surface_grace_steps':   ['surface grace (steps)', 1, 'Wheels must stay on a killer surface this many steps before the episode ends. Stops a clipped kerb counting as a crash.'],
+};
+
+const TOGGLE_HELP = {
+  weave: 'Apply the weave and flip penalties.',
+  surfaces: 'Apply per-surface rewards and the end-episode list.',
+  effects: 'Tell the policy how far ahead the next booster / no-grip / danger is.',
+  turbo_bonus: 'Apply the booster bonus.',
+  gear: 'Apply the gear bonus and downshift penalty.',
+  accel: 'Apply the throttle and acceleration bonuses.',
+  speedslide: "Grade slides against SDHelper's own band table. Does nothing below the surface's speed floor, so there is no point turning it on until the car is that quick.",
+};
+
+let CONFIG = null, CONFIG_META = null, TUNE_DIRTY = false;
+
+function setPath(obj, path, value) {
+  const keys = path.split('.');
+  let o = obj;
+  for (const k of keys.slice(0, -1)) o = o[k];
+  o[keys.at(-1)] = value;
+}
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => (o || {})[k], obj);
+}
+
+let TUNE_PROFILE_TOUCHED = false;
+function profileChanged() { TUNE_PROFILE_TOUCHED = true; loadConfig(); }
+
+async function loadConfig(keepMap) {
+  const want = keepMap || $('tuneMap').value;
+  // Until the user touches the stage dropdown, the server picks the profile
+  // the running trainer is on; after that, the dropdown wins.
+  // The stage dropdown is authoritative once the page has settled - it always
+  // has a value (explore/race), so always ask for that file. Before the first
+  // load, TUNE_PROFILE_TOUCHED is false and we let the server pick the stage
+  // the running trainer is on, which then sets the dropdown.
+  const prof = $('tuneProfile') ? $('tuneProfile').value : '';
+  let j;
+  try {
+    const qs = [];
+    if (want) qs.push('map=' + encodeURIComponent(want));
+    if (prof && (TUNE_PROFILE_TOUCHED || CONFIG_META))
+      qs.push('profile=' + encodeURIComponent(prof));
+    j = await (await fetch('/api/config' + (qs.length ? '?' + qs.join('&') : ''))).json();
+  } catch { return; }
+  CONFIG_META = j;
+  CONFIG = j.config;
+  // Reflect the profile actually loaded (from the trainer, or the query).
+  if ($('tuneProfile') && !TUNE_PROFILE_TOUCHED)
+    $('tuneProfile').value = (j.profile === 'race') ? 'race' : 'explore';
+  if ($('tuneSaveAs') && j.config_file)
+    $('tuneSaveAs').placeholder = j.config_file.replace(/\.json$/, '');
+  // Explore and race keep separate files per map. Saying which one is on
+  // screen is the difference between "my surface weights do nothing" and
+  // "I am editing the other stage".
+  if ($('tuneFile')) {
+    $('tuneFile').innerHTML = j.config_file
+      ? `editing <code>${esc(j.config_file)}</code>`
+        + (j.profile ? ` &mdash; the <b>${esc(j.stage)}</b> stage, which is `
+                       + `what the running trainer reads` : '')
+      : '';
+  }
+  TUNE_DIRTY = false;
+
+  const sel = $('tuneMap');
+  const opts = [...new Set([...(j.maps || []), j.map, j.live_map].filter(Boolean))];
+  sel.innerHTML = opts.map(m =>
+    `<option value="${esc(m)}"${m === j.map ? ' selected' : ''}>` +
+    `${esc(m)}${m === j.live_map ? ' — loaded now' : ''}</option>`).join('');
+
+  const csel = $('copyMap');
+  if (csel) {
+    const cur = csel.value;
+    csel.innerHTML = opts.map(m =>
+      `<option value="${esc(m)}">${esc(m)}${m === j.live_map ? ' — loaded now' : ''}</option>`).join('');
+    csel.value = (cur && opts.includes(cur)) ? cur : (j.live_map || j.map || opts[0] || '');
+  }
+
+  $('tuneStatus').textContent = (j.maps || []).includes(j.map)
+      ? '' : 'no file yet — Save creates one';
+  renderFields();
+  renderSurfaces();
+}
+
+function renderFields() {
+  const parts = [];
+  const sections = [['episode', 'episode'], ['reward', 'reward'],
+                    ['action', 'controls'], ['speedslide', 'speedslide (high speed only)'],
+                    ['line', 'reference line &amp; checkpoints'],
+                    ['stuck', 'stuck detector'], ['reset', 'reset']];
+  for (const [key, label] of sections) {
+    parts.push(`<div class="grp">${label}</div>`);
+    for (const k of Object.keys(CONFIG[key] || {}))
+      parts.push(field(`${key}.${k}`, CONFIG[key][k]));
+  }
+  parts.push(`<div class="grp">surfaces</div>`);
+  parts.push(field('surface_grace_steps', CONFIG.surface_grace_steps));
+  $('tuneFields').innerHTML = parts.join('');
+
+  renderHints();
+  renderMarks();
+  renderCpOverrides();
+
+  $('tuneToggles').innerHTML = Object.keys(CONFIG.enabled || {}).map(k =>
+    `<label class="toggle ${CONFIG.enabled[k] ? 'on' : ''}"
+            title="${esc(TOGGLE_HELP[k] || '')}">
+       <input type="checkbox" ${CONFIG.enabled[k] ? 'checked' : ''}
+              onchange="onToggle('${k}', this.checked)"> ${esc(k)}</label>`).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Hints, marks, checkpoint sizes, section times.
+//
+// All four edit the same per-map config the fields above do, so they save with
+// the same button and hot-reload into a running trainer the same way.
+// ---------------------------------------------------------------------------
+
+// Only the fields worth editing by hand. `control` and the rest keep their
+// defaults unless someone goes to the JSON, which is the right split: a panel
+// that exposes every key is a panel nobody can find anything in.
+const HINT_COLS = [
+  ['name',           'text',   'name',        'What this hint is for. Shows up in the reward log.'],
+  ['cp_from',        'number', 'from cp',     '-1 = from the start line. cp_from 1 means "after checkpoint 1".'],
+  ['cp_to',          'number', 'to cp',       '-1 = to the finish.'],
+  ['mark_from',      'text',   'from mark',   'A place you drove to. Overrides from-cp within that section.'],
+  ['mark_to',        'text',   'to mark',     'A place you drove to.'],
+  ['speed_from_kmh', 'number', 'speed from',  'km/h. 0 = no lower bound.'],
+  ['speed_to_kmh',   'number', 'speed to',    'km/h. 0 = no upper bound.'],
+  ['hold_ms',        'number', 'tap ms',      'How long one tap lasts. Payment stops here whether or not the policy lets go.'],
+  ['gap_ms',         'number', 'gap ms',      'Quiet time before the next tap.'],
+  ['w',              'number', 'reward',      'Per step while tapping inside the window. Keep it small.'],
+  ['gas',            'text',   'force gas',   'Warm-up only. -1 to 1, or blank for "no opinion".'],
+  ['brake',          'text',   'force brake', 'Warm-up only. -1 to 1, or blank.'],
+  ['steer',          'text',   'force steer', 'Warm-up only. -1 to 1, or blank.'],
+];
+
+async function calibrateSeats() {
+  $('calibStatus').textContent = 'moving each pad in turn...';
+  const r = await post('/api/calibrate', {});
+  if (!r || !r.ok) {
+    $('calibStatus').innerHTML =
+      `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
+    return;
+  }
+  const pairs = Object.entries(r.mapping || {});
+  const dead = pairs.filter(([, seat]) => seat === null).length;
+  $('calibStatus').innerHTML = dead
+    ? `<span class="warn">${dead} pad(s) drive nothing &mdash; assign a `
+      + `controller to every seat in the game</span>`
+    : 'every pad drives a seat';
+  tick();
+}
+
+function renderSeats(seats) {
+  if (!seats || !seats.length) { $('seatRows').innerHTML = ''; return; }
+  const UI = {0: 'none', 1: 'playing', 2: 'intro', 3: 'outro', 11: 'finish'};
+  $('seatRows').innerHTML = seats.map(s => {
+    const bad = !s.pad_up || !s.car || s.bound !== s.seat;
+    const bits = [
+      `pad ${s.pad} ${s.pad_up ? 'up' : '<span class="warn">DOWN</span>'}`,
+      s.car ? 'car' : '<span class="warn">no car</span>',
+      UI[s.ui] || ('ui ' + s.ui),
+      s.bound === null || s.bound === undefined
+        ? '<span class="warn">pad link untested</span>'
+        : (s.bound === s.seat ? 'pad drives this seat'
+           : `<span class="warn">pad drives seat ${s.bound}</span>`),
+      s.moving ? 'has moved' : 'stationary',
+    ];
+    if (s.dist != null) bits.push(`${(+s.dist).toFixed(0)}m`);
+    return `<div class="fleetrow${bad ? ' warn' : ''}">
+      <strong>seat ${s.seat}</strong> ${bits.join(' &middot; ')}</div>`;
+  }).join('');
+}
+
+function renderHints() {
+  const hints = CONFIG.hints || (CONFIG.hints = []);
+  if (!hints.length) {
+    $('hintList').innerHTML = '<div class="hint">none — add one to nudge a ' +
+      'behaviour in one part of the track</div>';
+    return;
+  }
+  $('hintList').innerHTML = hints.map((h, i) => `
+    <div class="hintrow">
+      <div class="row">
+        <strong>${esc(h.name || 'hint ' + i)}</strong>
+        <button onclick="delHint(${i})">remove</button>
+      </div>
+      <div class="tunegrid">` +
+      HINT_COLS.map(([k, type, label, help]) => {
+        const v = h[k] === null || h[k] === undefined ? '' : h[k];
+        return `<div class="fld"><span class="k" title="${esc(help)}">${esc(label)}</span>` +
+          `<input type="${type}" value="${esc(v)}" ` +
+          `onchange="onHint(${i}, '${k}', this.value)"></div>`;
+      }).join('') + `</div></div>`).join('');
+}
+
+function onHint(i, key, raw) {
+  const h = CONFIG.hints[i];
+  const numeric = ['cp_from', 'cp_to', 'speed_from_kmh', 'speed_to_kmh',
+                   'hold_ms', 'gap_ms', 'w', 's_from', 's_to'];
+  const forced = ['gas', 'brake', 'steer'];
+  const v = String(raw).trim();
+  if (forced.includes(key)) {
+    // Blank means "no opinion on this axis", which is null, not 0 - 0 would
+    // be a real instruction to hold the pedal at neutral.
+    h[key] = v === '' ? null : Math.max(-1, Math.min(1, +v));
+  } else if (numeric.includes(key)) {
+    h[key] = v === '' ? 0 : +v;
+  } else {
+    h[key] = v;
+  }
+  markDirty();
+}
+
+function addHint(seed) {
+  (CONFIG.hints || (CONFIG.hints = [])).push(Object.assign({
+    name: 'hint ' + ((CONFIG.hints || []).length + 1),
+    cp_from: -1, cp_to: -1, mark_from: '', mark_to: '',
+    speed_from_kmh: 0, speed_to_kmh: 0,
+    hold_ms: 120, gap_ms: 700, w: 0.05,
+    gas: null, brake: null, steer: null,
+  }, seed || {}));
+  markDirty(); renderHints();
+}
+
+function delHint(i) { CONFIG.hints.splice(i, 1); markDirty(); renderHints(); }
+
+function renderMarks() {
+  const marks = CONFIG.marks || {};
+  const names = Object.keys(marks).sort();
+  if (!names.length) {
+    $('markList').innerHTML = '<div class="hint">none yet — drive to a spot ' +
+      'and press <strong>Mark here</strong> above</div>';
+    return;
+  }
+  $('markList').innerHTML = names.map(n => {
+    const p = marks[n].map(x => (+x).toFixed(1)).join(', ');
+    return `<div class="row"><code>${esc(n)}</code>` +
+      `<span class="hint" style="margin:0">[${esc(p)}]</span>` +
+      `<button onclick="delMark('${esc(n)}')">delete</button></div>`;
+  }).join('');
+}
+
+async function delMark(name) {
+  const r = await post('/api/unmark',
+                       {name, map: (CONFIG_META || {}).map});
+  if (r && r.ok) { CONFIG.marks = r.marks; renderMarks(); }
+  else alert('could not delete: ' + ((r && r.err) || 'no reply'));
+}
+
+function renderCpOverrides() {
+  const ov = (CONFIG.line && CONFIG.line.cp_overrides) || {};
+  const keys = Object.keys(ov).sort((a, b) => +a - +b);
+  if (!keys.length) {
+    $('cpOverrides').innerHTML = '<div class="hint">none — every gate uses ' +
+      'the global half-width and height</div>';
+    return;
+  }
+  $('cpOverrides').innerHTML = keys.map(k => `
+    <div class="row">
+      <span class="k">cp ${esc(k)}</span>
+      <label>half width</label>
+      <input type="number" step="1" value="${esc(ov[k].half_width ?? '')}"
+             onchange="onCpOverride('${esc(k)}', 'half_width', this.value)">
+      <label>height</label>
+      <input type="number" step="1" value="${esc(ov[k].height ?? '')}"
+             onchange="onCpOverride('${esc(k)}', 'height', this.value)">
+      <button onclick="delCpOverride('${esc(k)}')">remove</button>
+    </div>`).join('');
+}
+
+function onCpOverride(idx, key, raw) {
+  const ov = CONFIG.line.cp_overrides || (CONFIG.line.cp_overrides = {});
+  const v = String(raw).trim();
+  ov[idx] = ov[idx] || {};
+  if (v === '') delete ov[idx][key]; else ov[idx][key] = +v;
+  markDirty();
+}
+
+function addCpOverride() {
+  const idx = prompt('which checkpoint? (0 is the first)');
+  if (idx === null || String(idx).trim() === '') return;
+  const ov = CONFIG.line.cp_overrides || (CONFIG.line.cp_overrides = {});
+  ov[String(+idx)] = ov[String(+idx)] || {half_width: 18, height: 10};
+  markDirty(); renderCpOverrides();
+}
+
+function delCpOverride(idx) {
+  delete CONFIG.line.cp_overrides[idx]; markDirty(); renderCpOverrides();
+}
+
+const ms = v => (v == null ? '-' : (v / 1000).toFixed(3) + 's');
+
+async function loadSplits() {
+  let j;
+  try {
+    j = await (await fetch('/api/splits')).json();
+  } catch { j = null; }
+  if (!j || !j.ok) {
+    $('splitStatus').innerHTML =
+      `<span class="warn">${esc((j && j.err) || 'no reply')}</span>`;
+    $('splitTable').innerHTML = ''; return;
+  }
+  $('splitStatus').textContent =
+    `${j.map} — ${j.episodes} episode(s)` +
+    (j.best_lap ? `, best lap ${ms(j.best_lap)}` : ', no finish yet') +
+    (j.theoretical ? `, theoretical best ${ms(j.theoretical)}` : '');
+  if (!j.sections.length) {
+    $('splitTable').innerHTML = `<div class="hint">${esc(j.note || 'nothing yet')}</div>`;
+    return;
+  }
+  // Biggest gap first is not the display order - keep track order so it reads
+  // like the lap - but mark it, because it is the actionable one.
+  let worst = -1, worstGap = -1;
+  j.sections.forEach((s, i) => {
+    if ((s.gap ?? -1) > worstGap) { worstGap = s.gap ?? -1; worst = i; }
+  });
+  $('splitTable').innerHTML =
+    '<table class="splits"><tr><th>section</th><th>best</th><th>median</th>' +
+    '<th>gap</th><th>reached</th><th></th></tr>' +
+    j.sections.map((s, i) => `<tr${i === worst ? ' class="worst"' : ''}>
+      <td>${esc(s.label)}</td><td>${ms(s.best)}</td><td>${ms(s.median)}</td>
+      <td>${ms(s.gap)}</td><td>${s.reached}/${j.episodes}</td>
+      <td><button onclick="hintForSection(${s.from_cp}, ${s.to_cp})"
+          title="Add a hint scoped to this section">aim a hint here</button></td>
+    </tr>`).join('') + '</table>';
+}
+
+function hintForSection(fromCp, toCp) {
+  addHint({name: `section-${toCp}`, cp_from: Math.max(fromCp, 0), cp_to: toCp});
+  $('hintList').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+function field(path, value) {
+  const [label, step, help, scale] = FIELD[path]
+        || [path.split('.').at(-1), 0.01, ''];
+  const shown = scale ? +(value * scale).toFixed(2) : value;
+  // The pedal thresholds are compared against an action already clipped to
+  // [-1, 1], so anything >= 1 disconnects that pedal entirely and nothing
+  // downstream can tell you - a car that never brakes looks exactly like a car
+  // that chose not to. brake_threshold sat at 1.2 for hours once. Bound them.
+  const pedal = path === 'action.gas_threshold'
+             || path === 'action.brake_threshold';
+  const bounds = pedal ? ' min="-1" max="0.95"' : '';
+  const input = step === null
+    ? `<input type="text" value="${esc(shown)}" onchange="onField('${path}', this.value)">`
+    : `<input type="number" step="${step}"${bounds} value="${shown}"
+              onchange="onField('${path}', +this.value)">`;
+  return `<div class="fld"><span class="k">${esc(label)}</span>${input}` +
+         (help ? `<div class="h">${esc(help)}</div>` : '') + `</div>`;
+}
+
+function onField(path, value) {
+  // Fields with a display scale are edited in one unit and stored in another.
+  const scale = (FIELD[path] || [])[3];
+  if ((path === 'action.gas_threshold' || path === 'action.brake_threshold')
+      && value >= 1) {
+    alert(`${path.split('.').at(-1)} of ${value} can never be met - the network `
+        + `output is clipped to [-1, 1], so this switches that pedal OFF `
+        + `entirely. Clamped to 0.95; 0 is the usual value.`);
+    value = 0.95;
+    renderFields();
+  }
+  setPath(CONFIG, path, scale ? value / scale : value);
+  markDirty();
+}
+function onToggle(key, on) {
+  CONFIG.enabled[key] = on; markDirty(); renderFields();
+}
+function markDirty() {
+  TUNE_DIRTY = true;
+  $('tuneStatus').innerHTML = '<span class="warn">unsaved</span>';
+}
+
+// Which materials to list.
+//
+// EPlugSurfaceMaterialId is the whole Nadeo engine's enum - 81 entries shared
+// with ShootMania and with editor test surfaces. A Trackmania track uses
+// about six of them. Listing all 81 is listing 75 rows that can never fire,
+// which is why the panel used to look like it was offering surfaces the game
+// does not have: it was.
+//
+// Three tiers, narrowest first:
+//   seen  - materials this map has ACTUALLY put under the wheels, recorded by
+//           the environment while driving. Evidence, not a guess. Empty until
+//           a trainer has driven the map once.
+//   likely- the hand-picked set any Trackmania track plausibly uses.
+//   all   - the full enum, for when you genuinely need something exotic.
+let SURF_SCOPE = 'seen';
+
+function surfaceList() {
+  const seen = CONFIG_META.seen_materials || [];
+  const likely = CONFIG_META.materials || [];
+  if (SURF_SCOPE === 'all') return CONFIG_META.all_materials || [];
+  if (SURF_SCOPE === 'likely') return likely;
+  // Anything already given a weight stays visible whatever the scope, or
+  // saving would silently drop a setting you cannot see.
+  const tuned = Object.keys(CONFIG.surfaces || {});
+  const kill = CONFIG.terminate_on_surface || [];
+  const set = new Set([...seen, ...tuned, ...kill]);
+  return [...set].sort();
+}
+
+function setSurfScope(scope) { SURF_SCOPE = scope; renderSurfaces(); }
+
+function renderSurfaces() {
+  const kill = new Set(CONFIG.terminate_on_surface || []);
+  const seen = new Set(CONFIG_META.seen_materials || []);
+  const list = surfaceList();
+
+  const tab = (id, label, n) =>
+    `<button class="chip ${SURF_SCOPE === id ? 'on' : ''}"
+             onclick="setSurfScope('${id}')">${esc(label)}${
+       n === null ? '' : ` (${n})`}</button>`;
+  let head = `<div class="surfscope">
+      ${tab('seen', 'on this map', seen.size)}
+      ${tab('likely', 'Trackmania surfaces', (CONFIG_META.materials || []).length)}
+      ${tab('all', 'everything', (CONFIG_META.all_materials || []).length)}
+    </div>`;
+  if (SURF_SCOPE === 'seen' && !seen.size)
+    head += `<div class="empty">Nothing recorded for this map yet — the list
+      fills in as soon as a trainer drives it. Use "Trackmania surfaces"
+      meanwhile.</div>`;
+  if (SURF_SCOPE === 'all')
+    head += `<div class="empty">This is the whole engine enum, including
+      ShootMania and editor-test surfaces that no Trackmania track contains.
+      Most of these can never fire.</div>`;
+
+  $('tuneSurfaces').innerHTML = head + list.map(m => {
+    const w = CONFIG.surfaces[m] ?? 0;
+    return `<div class="surf ${kill.has(m) ? 'kill' : ''}">
+      <span class="nm">${esc(m)}${seen.has(m) ? ' <b title="driven on here">\u25cf</b>' : ''}</span>
+      <span class="bdg">${esc(CONFIG_META.groups[m] || 'other')}</span>
+      <input type="number" step="0.1" value="${w}"
+             title="reward per wheel per step on this surface"
+             onchange="onSurface('${esc(m)}', +this.value)">
+      <label title="end the episode when a wheel stays on this">
+        <input type="checkbox" ${kill.has(m) ? 'checked' : ''}
+               onchange="onKill('${esc(m)}', this.checked)">end</label>
+    </div>`;
+  }).join('');
+}
+
+function onSurface(name, value) {
+  if (value) CONFIG.surfaces[name] = value; else delete CONFIG.surfaces[name];
+  markDirty();
+}
+function onKill(name, on) {
+  const set = new Set(CONFIG.terminate_on_surface || []);
+  on ? set.add(name) : set.delete(name);
+  CONFIG.terminate_on_surface = [...set];
+  markDirty(); renderSurfaces();
+}
+
+async function saveConfig() {
+  const map = $('tuneMap').value;
+  // The stage dropdown is authoritative: whatever it says (explore / race) is
+  // the file we write - <map>.explore.json or <map>.race.json. A running
+  // trainer on that stage stat()s the file and hot-reloads within a second.
+  const profile = $('tuneProfile') ? $('tuneProfile').value : 'explore';
+  const r = await post('/api/config', {map, config: CONFIG, profile});
+  if (!r.ok) { $('tuneStatus').innerHTML = `<span class="warn">${esc(r.err)}</span>`; return; }
+  TUNE_DIRTY = false;
+  $('tuneStatus').textContent = 'saved — a running trainer picks this up within a second';
+  setTimeout(() => { if (!TUNE_DIRTY) $('tuneStatus').textContent = ''; }, 6000);
+}
+
+async function saveConfigAs() {
+  const name = ($('tuneSaveAs').value || $('tuneSaveAs').placeholder || '').trim();
+  if (!name) { $('tuneStatus').innerHTML = '<span class="warn">type a name</span>'; return; }
+  const r = await post('/api/config', {config: CONFIG, save_as: name});
+  if (!r.ok) { $('tuneStatus').innerHTML = `<span class="warn">${esc(r.err)}</span>`; return; }
+  $('tuneStatus').textContent = `saved as ${r.map}.json`;
+  $('tuneSaveAs').value = '';
+  loadConfig();   // refresh the map list so the new file shows up
+  setTimeout(() => { if (!TUNE_DIRTY) $('tuneStatus').textContent = ''; }, 6000);
+}
+
+// Copy the on-screen values into <map>.<stage>.json - e.g. seed the racer's
+// config from a tuned explore config. Writes a different file; the trainer you
+// are watching keeps reading its own until you point one at the new file.
+// Pull another map/stage's config ONTO the editor. Does not write anything -
+// the values land on screen marked dirty, and the normal Save (or Save as new)
+// commits them to whatever map+stage the Tuning selectors are pointing at.
+async function copyConfigFrom() {
+  const m = $('copyMap').value, st = $('copyStage').value;
+  const s = $('copyStatus');
+  if (!m) { s.innerHTML = '<span class="warn">pick a map</span>'; return; }
+  let j;
+  try {
+    j = await (await fetch('/api/config?map=' + encodeURIComponent(m)
+                           + '&profile=' + encodeURIComponent(st))).json();
+  } catch { s.innerHTML = '<span class="warn">fetch failed</span>'; return; }
+  if (!j || !j.config) { s.innerHTML = `<span class="warn">${esc((j && j.err) || 'no such config')}</span>`; return; }
+  CONFIG = j.config;
+  TUNE_DIRTY = true;
+  renderFields();
+  renderSurfaces();
+  const here = $('tuneMap').value + '.' + ($('tuneProfile') ? $('tuneProfile').value : '');
+  s.textContent = `loaded ${m}.${st} — review, then Save to write it to ${here}`;
+  setTimeout(() => { if (TUNE_DIRTY) s.textContent = ''; }, 10000);
+}
+
+async function copyConfigTo() {
+  const m = $('copyMap').value, st = $('copyStage').value;
+  const s = $('copyStatus');
+  if (!m) { s.innerHTML = '<span class="warn">pick a map</span>'; return; }
+  if (!CONFIG) { s.innerHTML = '<span class="warn">nothing loaded to copy</span>'; return; }
+  const target = m + '.' + st;
+  const here = $('tuneMap').value + '.' +
+               ($('tuneProfile') ? $('tuneProfile').value : '');
+  if (target === here &&
+      !confirm('That is the file you are editing. Overwrite it with the values on screen?'))
+    return;
+  const r = await post('/api/config', {config: CONFIG, save_as: target});
+  if (!r.ok) { s.innerHTML = `<span class="warn">${esc(r.err)}</span>`; return; }
+  s.textContent = `copied to ${r.map}.json — point the racer at it with --stage race on that map`;
+  setTimeout(() => { s.textContent = ''; }, 8000);
+}
+
+// -- why -------------------------------------------------------------------
+
+function partChip([k, v]) {
+  const cls = v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  return `<span class="part ${cls}">${esc(k)} ${v > 0 ? '+' : ''}${v.toFixed(1)}</span>`;
+}
+
+async function loadWhy() {
+  let j;
+  try { j = await (await fetch('/api/why')).json(); } catch { return; }
+  const box = $('whyList');
+  if (!j.entries.length) {
+    box.innerHTML = '<div class="empty">Nothing yet. Start training and each ' +
+                    'finished episode explains itself here.</div>';
+    return;
+  }
+  box.innerHTML = j.entries.map(e => {
+    const good = e.reason === 'FINISH';
+    const parts = Object.entries(e.reward_parts || {})
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+    const m = e.metrics || {};
+    const ent = m['train/ent_coef'], cl = m['train/critic_loss'];
+    return `<div class="why ${good ? 'finish' : (e.return < 0 ? 'bad' : '')}">
+      <div class="hd">
+        <b>ep ${e.episode}</b>
+        <span>${esc(e.reason)}</span>
+        <span>return ${e.return > 0 ? '+' : ''}${e.return}</span>
+        <span title="ended at / furthest reached / started at, measured along the reference line">${e.distance}m${
+          e.max_distance != null && e.max_distance > e.distance + 5
+            ? ` (reached ${e.max_distance}m)` : ''}${
+          e.start_distance ? ` (started ${e.start_distance}m in)` : ''}</span>
+        <span>cp ${e.cp ?? '-'}/${e.cp_total ?? '-'}</span>
+        ${e.race_time ? `<span>${(e.race_time/1000).toFixed(3)}s</span>` : ''}
+        ${ent !== undefined ? `<span>entropy ${ent.toFixed(3)}</span>` : ''}
+        ${cl !== undefined ? `<span>critic ${cl.toFixed(2)}</span>` : ''}
+      </div>
+      <div class="parts">${parts.map(partChip).join('')}</div>
+      ${(e.why || []).map(w => `<div class="note">${esc(w)}</div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+// -- snapshots -------------------------------------------------------------
+
+let ARCHIVE = {};
+async function loadArchive() {
+  let j;
+  try { j = await (await fetch('/api/archive')).json(); } catch { return; }
+  ARCHIVE = j.archive || {};
+  const sel = $('arcModel'), keep = sel.value;
+  const sig = JSON.stringify(j.models);
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = (j.models || []).map(m => `<option>${esc(m)}</option>`).join('');
+    if ((j.models || []).includes(keep)) sel.value = keep;
+  }
+  renderArchive();
+}
+
+function renderArchive() {
+  const model = $('arcModel').value;
+  const rows = ARCHIVE[model] || [];
+  const box = $('arcList');
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty">No snapshots yet. One is written on ' +
+                    'every new best, every new furthest checkpoint, and every ' +
+                    '30 minutes.</div>';
+    return;
+  }
+  box.innerHTML = rows.map(r => `<div class="item">
+      <span class="nm">${esc(r.name)}</span>
+      <span class="dt">${new Date(r.mtime*1000).toLocaleString()}</span>
+      <button onclick="restore('${esc(model)}','${esc(r.name)}')">Restore</button>
+    </div>`).join('');
+}
+
+async function restore(model, snapshot) {
+  if (!confirm(`Copy ${snapshot} over the live ${model}?\n\n` +
+               `The current model is kept as ${model}.zip.pre-restore.`)) return;
+  const r = await post('/api/archive/restore', {model, snapshot});
+  alert(r.ok ? `Restored ${snapshot}.\nStart training with "resume" ticked.`
+             : `Failed: ${r.err}`);
+}
+
+// -- saved runs ------------------------------------------------------------
+
+async function loadRuns() {
+  let j;
+  try { j = await (await fetch('/api/runs')).json(); } catch { return; }
+  const box = $('runsList');
+  if (!j.maps.length) {
+    box.innerHTML = '<div class="empty">No saved runs yet.</div>';
+    return;
+  }
+  box.innerHTML = j.maps.map(m => {
+    const head = `<div class="item"><span class="nm"><b>${esc(m.map)}</b></span>
+      <span class="tm">${m.replay_total || 0} replays</span>
+      <span class="dt">${m.traces} traces</span></div>`;
+    return head + m.replays.map(r =>
+      `<div class="item"><span class="nm" style="padding-left:14px;color:var(--dim)">
+         ${esc(r.replace('.Replay.Gbx',''))}</span></div>`).join('');
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Remember the launch settings across a refresh.
+//
+// Only the controls that are chosen ONCE at launch - stage, line, instances,
+// seats, warm-up, handover, and the episode/termination numbers. The tuning
+// config is deliberately NOT included: it lives in a file the running trainer
+// re-reads, and a browser copy would silently fight it.
+//
+// Restored before the first tick, so a poll cannot overwrite a value with the
+// server's default before the saved one is applied.
+// ---------------------------------------------------------------------------
+const REMEMBER = ['stageSel', 'lineSel', 'trInstances', 'trSeats', 'trName',
+                  'trBootstrap', 'trHandover', 'trPatience', 'trThenRace',
+                  'trRollback', 'padSeat', 'tMaxOffset', 'tStuckSpeed',
+                  'tStuckSecs', 'tEpCap', 'tWeave', 'tReversal', 'tCpRadius'];
+const PREFS_KEY = 'tmai.launch.v1';
+
+function savePrefs() {
+  const out = {};
+  for (const id of REMEMBER) {
+    const el = $(id);
+    if (!el) continue;
+    out[id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(out)); } catch {}
+}
+
+function restorePrefs() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }
+  catch { return; }
+  for (const [id, v] of Object.entries(saved)) {
+    const el = $(id);
+    if (!el) continue;
+    if (el.type === 'checkbox') { el.checked = !!v; continue; }
+    // A <select> whose options are filled in later (the line list) would
+    // silently drop the saved value, so remember it and apply it once the
+    // options exist.
+    if (el.tagName === 'SELECT' &&
+        ![...el.options].some(o => o.value === String(v))) {
+      el.dataset.wanted = v;
+      continue;
+    }
+    el.value = v;
+  }
+}
+
+// Options that arrive from the server after the first render.
+function applyWanted() {
+  for (const id of REMEMBER) {
+    const el = $(id);
+    if (!el || !el.dataset || !el.dataset.wanted) continue;
+    if ([...el.options].some(o => o.value === el.dataset.wanted)) {
+      el.value = el.dataset.wanted;
+      delete el.dataset.wanted;
+    }
+  }
+}
+
+restorePrefs();
+loadModelSettings();
+for (const id of REMEMBER) {
+  const el = $(id);
+  if (el) el.addEventListener('change', savePrefs);
+}
+
+tick();
+setInterval(tick, 250);
+loadWhy(); loadArchive(); loadRuns(); loadConfig(); loadLine(); loadModelList();
+setInterval(loadLine, 15000);
+setInterval(loadModelList, 30000);
+setInterval(() => loadTraces((CONFIG_META || {}).live_map), 8000);
+// The probe writes at 8Hz; matching that keeps the view live without
+// re-reading the same snapshot several times over.
+drawNN(); setInterval(drawNN, 125);
+// These read the filesystem, so they poll far slower than the telemetry panel.
+setInterval(loadWhy, 3000);
+setInterval(() => { loadArchive(); loadRuns(); }, 10000);
+// Follow the game onto a new map, but never throw away unsaved edits to do it.
+setInterval(async () => {
+  if (TUNE_DIRTY || !CONFIG_META) return;
+  try {
+    const s = await (await fetch('/api/status?seat=' + (($('padSeat')||{value:0}).value||0))).json();
+    const live = (s.latest || {}).map;
+    if (live && live !== CONFIG_META.live_map) loadConfig(live);
+  } catch {}
+}, 5000);
+</script>
+
+<script>
+// ---- Route editor -------------------------------------------------------
+// The route line the panel gets from /api/route is a best-effort estimate:
+// roadtrace where the track is one road ribbon, learned-from-runs elsewhere,
+// provisional as a last resort. It is read-only here. What the user edits is
+// PATCHES - short polylines anchored to two points on the line - that splice
+// over the sections the estimate got wrong or could not see (jumps, free
+// blocks, open ground). Saved to maps/<uid>.route_edits.json and merged back
+// in by env.routemodel on the next map load.
+const RE = {
+  cv: null, ctx: null, data: null,
+  view: {ox: 0, oy: 0, scale: 1},
+  mode: 'patch', kind: 'road',
+  patches: [], draft: null, sel: null, pan: null,
+  SNAP: 16,
+
+  init() {
+    this.cv = document.getElementById('route');
+    if (!this.cv) return;
+    this.ctx = this.cv.getContext('2d');
+    const c = this.cv;
+    c.addEventListener('wheel', e => this.onWheel(e), {passive: false});
+    c.addEventListener('pointerdown', e => this.onDown(e));
+    c.addEventListener('pointermove', e => this.onMove(e));
+    window.addEventListener('pointerup', () => { this.pan = null; this.sel = null; });
+    c.addEventListener('dblclick', e => { e.preventDefault(); this.closeDraft(true); });
+    c.addEventListener('contextmenu', e => e.preventDefault());
+    this.setMode('patch');
+    this.load();
+  },
+
+  async load(uid) {
+    try {
+      const q = uid ? ('?map=' + encodeURIComponent(uid)) : '';
+      const r = await fetch('/api/route' + q);
+      const j = await r.json();
+      if (!j || j.ok === false) { this.hint(j && j.err || 'no route'); return; }
+      this.data = j;
+      this.patches = (j.patches || []).map(p => ({
+        a: p.a.slice(), b: p.b.slice(),
+        points: p.points.map(q => q.slice()),
+        kind: p.kind === 'jump' ? 'jump' : 'road'}));
+      this.draft = null;
+      this.fit();
+      const bits = [j.source || 'none'];
+      if (j.note) bits.push(j.note);
+      this.hint(bits.join('  ·  ') +
+        (this.patches.length ? ('  ·  ' + this.patches.length + ' patch(es)') : ''));
+    } catch (e) { this.hint('route load failed'); }
+  },
+
+  bounds() {
+    const xs = [], zs = [];
+    const push = p => { xs.push(p[0]); zs.push(p[1]); };
+    (this.data.points || []).forEach(push);
+    (this.data.cells || []).forEach(c => { xs.push(c[0] * 32); zs.push(c[1] * 32); });
+    (this.data.checkpoints || []).forEach(push);
+    if (this.data.spawn) push(this.data.spawn);
+    if (this.data.finish) push(this.data.finish);
+    this.patches.forEach(p => { p.points.forEach(push); });
+    if (!xs.length) return {x0: 0, z0: 0, x1: 1, z1: 1};
+    return {x0: Math.min(...xs), z0: Math.min(...zs),
+            x1: Math.max(...xs), z1: Math.max(...zs)};
+  },
+
+  fit() {
+    if (!this.data) return;
+    const b = this.bounds(), pad = 40;
+    const w = this.cv.width, h = this.cv.height;
+    const sx = (w - 2 * pad) / Math.max(b.x1 - b.x0, 1);
+    const sz = (h - 2 * pad) / Math.max(b.z1 - b.z0, 1);
+    this.view.scale = Math.min(sx, sz);
+    this.view.ox = pad - b.x0 * this.view.scale;
+    this.view.oy = pad - b.z0 * this.view.scale;
+    this.draw();
+  },
+
+  T(x, z) { return [x * this.view.scale + this.view.ox,
+                    z * this.view.scale + this.view.oy]; },
+  inv(px, py) { return [(px - this.view.ox) / this.view.scale,
+                        (py - this.view.oy) / this.view.scale]; },
+  ptr(e) {
+    const r = this.cv.getBoundingClientRect();
+    return [(e.clientX - r.left) * this.cv.width / r.width,
+            (e.clientY - r.top) * this.cv.height / r.height];
+  },
+
+  nearestOnLine(px, py) {
+    const L = (this.data && this.data.points) || [];
+    let bi = -1, bd = this.SNAP * this.SNAP;
+    for (let i = 0; i < L.length; i++) {
+      const s = this.T(L[i][0], L[i][1]);
+      const d = (s[0] - px) ** 2 + (s[1] - py) ** 2;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bi < 0 ? null : L[bi].slice();
+  },
+
+  pickPatchPoint(px, py) {
+    for (let pi = 0; pi < this.patches.length; pi++) {
+      const pts = this.patches[pi].points;
+      for (let k = 0; k < pts.length; k++) {
+        const s = this.T(pts[k][0], pts[k][1]);
+        if ((s[0] - px) ** 2 + (s[1] - py) ** 2 < this.SNAP * this.SNAP)
+          return {pi, k};
+      }
+    }
+    return null;
+  },
+
+  onWheel(e) {
+    e.preventDefault();
+    const [px, py] = this.ptr(e);
+    const [wx, wz] = this.inv(px, py);
+    const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    this.view.scale *= f;
+    this.view.ox = px - wx * this.view.scale;
+    this.view.oy = py - wz * this.view.scale;
+    this.draw();
+  },
+
+  onDown(e) {
+    if (!this.data) return;
+    const [px, py] = this.ptr(e);
+    if (e.button === 2 || this.mode === 'del') {
+      const hit = this.pickPatchPoint(px, py);
+      if (hit) {
+        const p = this.patches[hit.pi];
+        p.points.splice(hit.k, 1);
+        if (p.points.length < 2) this.patches.splice(hit.pi, 1);
+        this.draw();
+      }
+      return;
+    }
+    if (this.mode === 'drag') {
+      this.sel = this.pickPatchPoint(px, py);
+      if (!this.sel) this.pan = [px, py];
+      return;
+    }
+    // patch mode
+    const onLine = this.nearestOnLine(px, py);
+    if (!this.draft) {
+      if (!onLine) { this.pan = [px, py]; return; }
+      this.draft = {a: onLine, b: null, points: [onLine.slice()], kind: this.kind};
+      this.hint('patch started — click along the gap, click the line again to close');
+      this.draw();
+      return;
+    }
+    if (onLine && this.draft.points.length >= 1) {
+      this.draft.b = onLine;
+      this.draft.points.push(onLine.slice());
+      this.closeDraft(false);
+      return;
+    }
+    this.draft.points.push(this.inv(px, py));
+    this.draw();
+  },
+
+  onMove(e) {
+    const [px, py] = this.ptr(e);
+    if (this.pan) {
+      this.view.ox += px - this.pan[0];
+      this.view.oy += py - this.pan[1];
+      this.pan = [px, py];
+      this.draw();
+      return;
+    }
+    if (this.sel) {
+      this.patches[this.sel.pi].points[this.sel.k] = this.inv(px, py);
+      this.draw();
+    }
+  },
+
+  closeDraft(fromDblclick) {
+    if (!this.draft) return;
+    if (fromDblclick) {
+      // close onto nearest line point if we have one, else drop
+      const last = this.draft.points[this.draft.points.length - 1];
+      this.draft.b = this.draft.b || last;
+    }
+    if (this.draft.points.length >= 2 && this.draft.b) {
+      this.patches.push({a: this.draft.a, b: this.draft.b,
+        points: this.draft.points, kind: this.draft.kind});
+      this.hint(this.patches.length + ' patch(es) — Save to write them');
+    }
+    this.draft = null;
+    this.draw();
+  },
+
+  setMode(m) {
+    this.mode = m;
+    if (m !== 'patch') this.closeDraft(true);
+    for (const [id, mm] of [['rtPatch', 'patch'], ['rtDrag', 'drag'], ['rtDel', 'del']]) {
+      const b = document.getElementById(id);
+      if (b) b.style.outline = mm === m ? '2px solid #3fb950' : 'none';
+    }
+    this.cv.style.cursor = m === 'patch' ? 'crosshair'
+      : m === 'del' ? 'not-allowed' : 'grab';
+  },
+
+  async save() {
+    if (!this.data) return;
+    this.closeDraft(true);
+    try {
+      const r = await fetch('/api/route/edits', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({map: this.data.map, patches: this.patches})});
+      const j = await r.json();
+      this.hint(j.ok ? ('saved ' + j.patches + ' patch(es) — takes effect on next map load')
+                     : ('save failed: ' + (j.err || '?')));
+    } catch (e) { this.hint('save failed'); }
+  },
+
+  revert() { this.patches = []; this.draft = null; this.save(); this.draw(); },
+
+  hint(t) { const h = document.getElementById('rtHint'); if (h) h.textContent = t; },
+
+  draw() {
+    const ctx = this.ctx, cv = this.cv;
+    if (!ctx) return;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (!this.data) return;
+    // occupancy backdrop
+    ctx.fillStyle = '#1b2530';
+    for (const c of (this.data.cells || [])) {
+      const s = this.T(c[0] * 32 + 16, c[1] * 32 + 16);
+      const px = Math.max(1, this.view.scale * 32);
+      ctx.fillRect(s[0] - px / 2, s[1] - px / 2, px, px);
+    }
+    // base line
+    const L = this.data.points || [];
+    if (L.length > 1) {
+      ctx.lineWidth = Math.max(2, this.view.scale * 9);
+      ctx.strokeStyle = '#13333a'; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      L.forEach((p, i) => { const s = this.T(p[0], p[1]);
+        i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); });
+      ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#2ea9c9'; ctx.stroke();
+    }
+    // saved patches
+    const drawPoly = (pts, col, dash) => {
+      ctx.setLineDash(dash || []);
+      ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.beginPath();
+      pts.forEach((p, i) => { const s = this.T(p[0], p[1]);
+        i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); });
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = col;
+      pts.forEach(p => { const s = this.T(p[0], p[1]);
+        ctx.beginPath(); ctx.arc(s[0], s[1], 4, 0, 7); ctx.fill(); });
+    };
+    this.patches.forEach(p => drawPoly(p.points,
+      p.kind === 'jump' ? '#e3b341' : '#3fb950',
+      p.kind === 'jump' ? [7, 6] : []));
+    if (this.draft) drawPoly(this.draft.points, '#f0f6fc', [4, 4]);
+    // landmarks
+    const mark = (p, col, r, sq) => {
+      const s = this.T(p[0], p[1]);
+      ctx.fillStyle = col; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (sq) ctx.rect(s[0] - r, s[1] - r, 2 * r, 2 * r);
+      else ctx.arc(s[0], s[1], r, 0, 7);
+      ctx.fill(); ctx.stroke();
+    };
+    (this.data.checkpoints || []).forEach((c, i) => {
+      mark(c, '#f59e0b', 6);
+      const s = this.T(c[0], c[1]);
+      ctx.fillStyle = '#fe8'; ctx.font = '11px system-ui';
+      ctx.fillText('CP' + (i + 1), s[0] + 8, s[1] - 6);
+    });
+    if (this.data.spawn) mark(this.data.spawn, '#3b82f6', 7);
+    if (this.data.finish) mark(this.data.finish, '#ef4444', 7, true);
+  },
+};
+RE.init();
+// follow the game onto a new map (only when there are no unsaved patches)
+setInterval(() => {
+  if (!RE.data || RE.draft) return;
+  const live = (CONFIG_META || {}).live_map;
+  if (live && live !== RE.data.map) RE.load(live);
+}, 6000);
+</script>
+</body>
+</html>

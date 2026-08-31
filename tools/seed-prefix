@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Make an instance's fresh Steam prefix look like the working one.
+#
+#   tools/seed-prefix 1
+#
+# A Steam user that has just installed Trackmania has a brand-new Wine prefix:
+# no Openplanet plugins, no settings, no maps. The game-side half of Openplanet
+# (Openplanet.dll and Openplanet/) lives in the game directory and therefore
+# came along with the reflink copy already - this fills in the prefix-side half.
+#
+# Three things, and the port is the one that cannot be done any other way:
+#   OpenplanetNext/   plugins + settings, ~4MB, copied from the base prefix
+#   S_Port            this instance's telemetry port, written into Settings.ini
+#   Maps/             the training maps
+#
+# Run it AFTER the game has been launched once, because Steam does not create
+# the prefix until then. Openplanet's signature mode still has to be set to
+# School by hand, every launch - there is no config file for it.
+set -euo pipefail
+
+SRC_PFX="${TMAI_SRC_PFX:-/mnt/4TB/SteamLibrary/steamapps/compatdata/2225070/pfx}"
+SRC_USER="$SRC_PFX/drive_c/users/steamuser"
+APPID=2225070
+PLUGIN_BASE=8766
+STRIDE=10
+
+[ $# -gt 0 ] || { echo "usage: seed-prefix <instance> [instance...]" >&2; exit 1; }
+
+for INSTANCE in "$@"; do
+  USER_NAME="tmai$(printf '%02d' "$INSTANCE")"
+  getent passwd "$USER_NAME" >/dev/null || { echo "no such user: $USER_NAME" >&2; continue; }
+  HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+  PFX="$HOME_DIR/.local/share/Steam/steamapps/compatdata/$APPID/pfx"
+  DST="$PFX/drive_c/users/steamuser"
+  PORT=$((PLUGIN_BASE + STRIDE * INSTANCE))
+
+  if ! sudo test -d "$DST"; then
+    echo "instance $INSTANCE: no prefix yet at $PFX" >&2
+    echo "                    launch the game once from that Steam client first" >&2
+    continue
+  fi
+  if pgrep -u "$USER_NAME" -f Trackmania.exe >/dev/null 2>&1; then
+    echo "instance $INSTANCE: the game is running - close it first" >&2
+    continue
+  fi
+
+  # Openplanet: settings and plugin storage.
+  if sudo test -d "$DST/OpenplanetNext"; then
+    echo "instance $INSTANCE: OpenplanetNext already present, leaving it"
+  else
+    sudo cp -a --reflink=auto "$SRC_USER/OpenplanetNext" "$DST/OpenplanetNext"
+    sudo chown -R "$USER_NAME:$USER_NAME" "$DST/OpenplanetNext"
+    echo "instance $INSTANCE: OpenplanetNext copied"
+  fi
+
+  # The telemetry plugin, ALWAYS - separately from the folder above.
+  #
+  # A prefix that has run the game once already has its own OpenplanetNext,
+  # created by Openplanet itself and containing none of our plugins. Skipping
+  # the copy because the folder exists leaves the port set, the settings
+  # right, and no plugin to listen on it - so the instance looks configured
+  # and never connects.
+  SRC_OP="$SRC_USER/OpenplanetNext/Plugins/TMAITelemetry.op"
+  if sudo test -f "$SRC_OP"; then
+    sudo -u "$USER_NAME" mkdir -p "$DST/OpenplanetNext/Plugins"
+    sudo cp -a "$SRC_OP" "$DST/OpenplanetNext/Plugins/TMAITelemetry.op"
+    sudo chown "$USER_NAME:$USER_NAME" "$DST/OpenplanetNext/Plugins/TMAITelemetry.op"
+    echo "instance $INSTANCE: TMAITelemetry.op installed"
+  else
+    echo "instance $INSTANCE: no TMAITelemetry.op to copy - run ./deploy_plugin.sh first" >&2
+  fi
+
+  # This instance's telemetry port. Openplanet only writes a [Plugin_*] section
+  # once a setting differs from its default, so on a fresh prefix the section
+  # does not exist and has to be created.
+  INI="$DST/OpenplanetNext/Settings.ini"
+  sudo -u "$USER_NAME" python3 - "$INI" "$PORT" <<'PY'
+import sys
+path, port = sys.argv[1], sys.argv[2]
+section = "[Plugin_TMAITelemetry]"
+try:
+    lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    lines = []
+out, inside, wrote = [], False, False
+for line in lines:
+    if line.startswith("["):
+        if inside and not wrote:
+            out.append(f"S_Port={port}"); wrote = True
+        inside = line.strip() == section
+    if inside and line.strip().startswith("S_Port="):
+        out.append(f"S_Port={port}"); wrote = True; continue
+    out.append(line)
+if not wrote:
+    out += ["", section, f"S_Port={port}"]
+open(path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+print(f"    telemetry port -> {port}")
+PY
+
+  # Maps.
+  SRC_MAPS="$SRC_USER/Documents/Trackmania/Maps"
+  DST_MAPS="$DST/Documents/Trackmania/Maps"
+  if sudo test -d "$SRC_MAPS"; then
+    sudo -u "$USER_NAME" mkdir -p "$DST_MAPS/Downloaded"
+    n=0
+    while IFS= read -r m; do
+      sudo cp -a --reflink=auto "$m" "$DST_MAPS/Downloaded/$(basename "$m")"
+      sudo chown "$USER_NAME:$USER_NAME" "$DST_MAPS/Downloaded/$(basename "$m")"
+      n=$((n + 1))
+    done < <(sudo find "$SRC_MAPS" -iname '*.Map.Gbx' -not -path '*Autosaves*')
+    echo "instance $INSTANCE: $n map(s) copied into Maps/Downloaded"
+  fi
+
+  echo "instance $INSTANCE: ready. Remaining by hand, in the game:"
+  echo "    - Openplanet signature mode -> School (every launch, no config file)"
+  echo "    - licence plate -> TAS"
+done

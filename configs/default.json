@@ -1,0 +1,87 @@
+{
+ "episode": {
+  "max_episode_s": 120.0
+ },
+ "reset": {
+  "mode": "giveup",
+  "button": "b",
+  "finish_button": "a",
+  "hold_ms": 250,
+  "settle_ms": 400,
+  "retries": 3,
+  "finish_fallback_after": 2,
+  "quick_timeout": 1.5,
+  "finish_timeout": 12,
+  "skip_intro": true,
+  "skip_button": "a",
+  "skip_interval_ms": 250
+ },
+ "stuck": {
+  "speed": 4,
+  "seconds": 3.0
+ },
+ "line": {
+  "max_offset": 30,
+  "soft_offset": 8,
+  "w_soft": 0.01,
+  "cp_mode": "gate",
+  "cp_half_width": 18,
+  "cp_height": 10,
+  "cp_radius": 20,
+  "cp_overrides": {},
+  "cp_strict_order": false
+ },
+ "reward": {
+  "w_progress": 1,
+  "step_cost": 0.02,
+  "finish_bonus": 100,
+  "cp_bonus": 25,
+  "off_line_penalty": 20,
+  "stuck_penalty": 10,
+  "w_weave": 0,
+  "w_reversal": 0,
+  "w_turbo_use": 0,
+  "w_air": 0,
+  "par_speed": 0,
+  "charge_unused_time": true,
+  "w_gear": 0.15,
+  "gear_hold_steps": 8,
+  "top_gear": 5,
+  "w_downshift": 0.4,
+  "w_gas": 0.01,
+  "w_accel": 0.05,
+  "w_both_pedals": 0
+ },
+ "speedslide": {
+  "w": 0.5,
+  "w_blue": -0.1,
+  "speed_floor_kmh": 0
+ },
+ "input_fidelity": {
+  "window": 40,
+  "settle_steps": 3,
+  "warn_below": 0.95
+ },
+ "marks": {},
+ "hints": [],
+ "action": {
+  "binary_gas": true,
+  "binary_brake": true,
+  "gas_threshold": 0,
+  "brake_threshold": 0,
+  "steer_levels": 10,
+  "steer_rate": 0.0
+ },
+ "surfaces": {},
+ "terminate_on_surface": [],
+ "surface_grace_steps": 4,
+ "enabled": {
+  "weave": false,
+  "surfaces": false,
+  "effects": true,
+  "turbo_bonus": false,
+  "gear": true,
+  "accel": true,
+  "speedslide": true
+ }
+}

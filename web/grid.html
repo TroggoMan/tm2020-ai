@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TMAI Instance Grid</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#242c38; --ink:#e6edf3;
+    --dim:#8b949e; --accent:#4dd4ac; --warn:#e3b341; --bad:#f4645f;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;
+         border-bottom:1px solid var(--line);background:var(--panel);
+         position:sticky;top:0;z-index:20;flex-wrap:wrap}
+  h1{font-size:13px;margin:0;letter-spacing:.09em;text-transform:uppercase;
+     font-weight:600}
+  header .sp{margin-left:auto}
+  label{font:11px/1 var(--mono);color:var(--dim);display:flex;align-items:center;gap:5px}
+  input[type=number]{width:56px;font:12px var(--mono);padding:5px 6px;
+       background:#0f141a;color:var(--ink);border:1px solid var(--line);border-radius:5px}
+  select,button{font:12px/1 inherit;padding:7px 11px;border-radius:6px;cursor:pointer;
+       background:#20272f;color:var(--ink);border:1px solid var(--line)}
+  button.go{background:#10241f;border-color:#1e4c40;color:var(--accent)}
+  button:hover{border-color:var(--dim)}
+  #hint{font:11px var(--mono);color:var(--dim);padding:6px 16px}
+  #hint.bad{color:var(--bad)}
+
+  #grid{display:grid;gap:8px;padding:10px;
+        grid-template-columns:repeat(var(--cols,2),1fr);align-content:start}
+  .pane{background:#000;border:1px solid var(--line);border-radius:8px;
+        overflow:hidden;display:flex;flex-direction:column;min-width:200px;
+        min-height:140px;resize:both}
+  .pane.drag{opacity:.4}
+  .pane.over{border-color:var(--accent)}
+  .bar{display:flex;align-items:center;gap:8px;padding:5px 9px;background:var(--panel);
+       border-bottom:1px solid var(--line);cursor:grab;user-select:none}
+  .bar .name{font:11px/1 var(--mono);color:var(--ink);white-space:nowrap;
+       overflow:hidden;text-overflow:ellipsis}
+  .bar .d{font:10px/1 var(--mono);color:var(--dim)}
+  .bar .x{margin-left:auto;color:var(--dim);cursor:pointer;padding:0 4px}
+  .bar .x:hover{color:var(--bad)}
+  .pane img{flex:1;width:100%;object-fit:contain;background:#000;min-height:0;display:block}
+  .pane .off{flex:1;display:flex;align-items:center;justify-content:center;
+       color:var(--dim);font:11px var(--mono)}
+  body.clean header,body.clean #hint{display:none}
+  body.clean .bar{opacity:0;transition:opacity .2s}
+  body.clean .pane:hover .bar{opacity:1}
+  body.clean #grid{padding:0;gap:0;height:100vh}
+  body.clean .pane{border-radius:0;border:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Instance Grid</h1>
+  <label>cols
+    <select id="cols">
+      <option>1</option><option selected>2</option><option>3</option><option>4</option>
+    </select>
+  </label>
+  <label>fps <input type="number" id="fps" value="12" min="1" max="30"></label>
+  <label>width <input type="number" id="w" value="960" min="240" max="1920" step="80"></label>
+  <button id="rescan">rescan displays</button>
+  <button id="reload">reload feeds</button>
+  <label title="also show the desktop and non-game displays"><input type="checkbox" id="showall"> all displays</label>
+  <button id="clean" title="hide chrome; the page becomes the capture surface">clean view</button>
+  <button class="go" id="full">fullscreen</button>
+  <span class="sp"></span>
+  <span id="count" style="font:11px var(--mono);color:var(--dim)"></span>
+</header>
+<div id="hint"></div>
+<div id="grid"></div>
+
+<script>
+const $ = s => document.getElementById(s);
+const LS = 'tmai_grid_v3';
+
+function load() {
+  try {
+    const o = JSON.parse(localStorage.getItem(LS));
+    return (o && typeof o === 'object') ? o : {};
+  } catch { return {}; }
+}
+function save() {
+  try {
+    STATE.cols = $('cols').value; STATE.fps = $('fps').value; STATE.w = $('w').value;
+    STATE.showall = $('showall').checked;
+    STATE.order = [...document.querySelectorAll('.pane')].map(p => p.dataset.display);
+    STATE.sizes = {};
+    document.querySelectorAll('.pane').forEach(p => {
+      STATE.sizes[p.dataset.display] = {w: p.style.width, h: p.style.height};
+    });
+    STATE.hidden = [...HIDDEN];
+    localStorage.setItem(LS, JSON.stringify(STATE));
+  } catch {}
+}
+
+let STATE = load();
+let HIDDEN;
+try {
+  HIDDEN = new Set(Array.isArray(STATE.hidden) ? STATE.hidden : []);
+  if (STATE.cols) $('cols').value = STATE.cols;
+  if (STATE.fps) $('fps').value = STATE.fps;
+  if (STATE.w) $('w').value = STATE.w;
+} catch (e) {
+  HIDDEN = new Set();
+  STATE = {};
+}
+
+function applyCols() { $('grid').style.setProperty('--cols', $('cols').value); save(); }
+$('cols').onchange = applyCols;
+$('fps').onchange = () => { save(); render(LAST); };
+$('w').onchange = () => { save(); render(LAST); };
+$('rescan').onclick = scan;
+$('reload').onclick = () => render(LAST, true);
+if (STATE.showall) $('showall').checked = true;
+$('showall').onchange = () => { save(); scan(); };
+$('full').onclick = () => document.documentElement.requestFullscreen?.();
+$('clean').onclick = () => { document.body.classList.toggle('clean'); };
+
+let LAST = [];
+
+async function scan() {
+  $('hint').className = ''; $('hint').textContent = 'scanning…';
+  let j;
+  const qs = $('showall').checked ? '?all=1' : '';
+  try { j = await (await fetch('/grid/displays' + qs)).json(); }
+  catch { $('hint').className = 'bad'; $('hint').textContent = 'panel unreachable'; return; }
+  if (!j.ffmpeg) {
+    $('hint').className = 'bad';
+    $('hint').textContent = 'ffmpeg not installed on the panel host - no feeds possible';
+  } else {
+    $('hint').textContent = j.displays.length
+      ? 'drag a title bar to reorder · drag a pane corner to resize · layout is remembered'
+      : ($('showall').checked
+         ? 'no X displays found'
+         : 'no game windows found - start a game (tools/headless-main.sh up, or a fleet instance). Tick "all displays" to see the desktop too.');
+  }
+  LAST = j.displays || [];
+  render(LAST);
+}
+
+function orderedDisplays(list) {
+  const order = STATE.order || [];
+  const known = new Set(list.map(d => d.display));
+  const seq = [...order.filter(d => known.has(d)),
+               ...list.map(d => d.display).filter(d => !order.includes(d))];
+  return seq.map(d => list.find(x => x.display === d)).filter(Boolean);
+}
+
+function render(list, bust) {
+  const g = $('grid'); g.innerHTML = '';
+  const shown = orderedDisplays(list).filter(d => !HIDDEN.has(d.display));
+  $('count').textContent = `${shown.length}/${list.length} shown`;
+  const fps = +$('fps').value, w = +$('w').value;
+  const t = bust ? '&t=' + Date.now() : '';
+  for (const d of shown) {
+    const pane = document.createElement('div');
+    pane.className = 'pane'; pane.dataset.display = d.display;
+    const sz = (STATE.sizes || {})[d.display];
+    if (sz) { if (sz.w) pane.style.width = sz.w; if (sz.h) pane.style.height = sz.h; }
+    pane.innerHTML =
+      `<div class="bar" draggable="true">
+         <span class="d">${esc(d.display)}</span>
+         <span class="name">${esc(d.label)}</span>
+         <span class="x" title="hide">✕</span>
+       </div>
+       <img alt="${esc(d.display)}"
+            src="/grid/mjpeg?display=${encodeURIComponent(d.display)}&fps=${fps}&w=${w}${t}"
+            onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'off',textContent:'no feed'}))">`;
+    pane.querySelector('.x').onclick = () => { HIDDEN.add(d.display); save(); render(LAST); };
+    wireDrag(pane);
+    new ResizeObserver(() => clearTimeout(pane._s) || (pane._s = setTimeout(save, 400)))
+      .observe(pane);
+    g.appendChild(pane);
+  }
+  applyCols();
+}
+
+let dragEl = null;
+function wireDrag(pane) {
+  const bar = pane.querySelector('.bar');
+  bar.addEventListener('dragstart', e => {
+    dragEl = pane; pane.classList.add('drag');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  bar.addEventListener('dragend', () => {
+    pane.classList.remove('drag');
+    document.querySelectorAll('.pane.over').forEach(p => p.classList.remove('over'));
+    save();
+  });
+  pane.addEventListener('dragover', e => {
+    e.preventDefault();
+    if (dragEl && dragEl !== pane) pane.classList.add('over');
+  });
+  pane.addEventListener('dragleave', () => pane.classList.remove('over'));
+  pane.addEventListener('drop', e => {
+    e.preventDefault(); pane.classList.remove('over');
+    if (!dragEl || dragEl === pane) return;
+    const g = $('grid'), kids = [...g.children];
+    if (kids.indexOf(dragEl) < kids.indexOf(pane)) pane.after(dragEl);
+    else pane.before(dragEl);
+    save();
+  });
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+// A hidden pane can be brought back by rescanning with the header menu:
+addEventListener('keydown', e => {
+  if (e.key === 'r' && !e.target.matches('input,select')) { HIDDEN.clear(); save(); render(LAST); }
+});
+
+// Never let an error leave a blank page with no explanation.
+addEventListener('error', e => {
+  $('hint').className = 'bad';
+  $('hint').textContent = 'grid script error: ' + (e.message || e.error);
+});
+
+scan();
+setInterval(scan, 30000);   // pick up instances that start/stop
+</script>
+</body>
+</html>
