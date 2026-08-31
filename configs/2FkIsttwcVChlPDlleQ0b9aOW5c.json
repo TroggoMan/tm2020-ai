@@ -1,0 +1,49 @@
+{
+  "episode": {
+    "max_episode_s": 120.0
+  },
+  "reset": {
+    "mode": "giveup",
+    "button": "b",
+    "finish_button": "a",
+    "hold_ms": 250.0,
+    "settle_ms": 400.0,
+    "retries": 3,
+    "finish_fallback_after": 2,
+    "quick_timeout": 1.5,
+    "finish_timeout": 12.0,
+    "skip_intro": true,
+    "skip_button": "a",
+    "skip_interval_ms": 250.0
+  },
+  "stuck": {
+    "speed": 1.0,
+    "seconds": 5.0
+  },
+  "line": {
+    "max_offset": 30.0,
+    "soft_offset": 8.0,
+    "w_soft": 0.01,
+    "cp_radius": 20.0
+  },
+  "reward": {
+    "w_progress": 1.0,
+    "step_cost": 0.02,
+    "finish_bonus": 100.0,
+    "off_line_penalty": 20.0,
+    "stuck_penalty": 10.0,
+    "w_weave": 0.0,
+    "w_reversal": 0.0,
+    "w_turbo_use": 0.0,
+    "w_air": 0.0
+  },
+  "surfaces": {},
+  "terminate_on_surface": [],
+  "surface_grace_steps": 4,
+  "enabled": {
+    "weave": false,
+    "surfaces": false,
+    "effects": true,
+    "turbo_bonus": false
+  }
+}

@@ -1,0 +1,8 @@
+[meta]
+name     = "TMAI Telemetry Bridge"
+author   = "troggoman"
+category = "Development"
+version  = "1.0.0"
+
+[script]
+dependencies = ["VehicleState"]

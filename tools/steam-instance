@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Run one instance's Steam client, as its own Linux user.
+#
+#   tools/steam-instance 1          open Steam for instance 1
+#   tools/steam-instance 1 --vnc    on its own Xvfb, viewable over VNC
+#
+# Why a separate Linux USER rather than a container: a container would need
+# the NVIDIA container toolkit installed and configured, GPU passthrough,
+# /dev/uinput passed in and an Xvfb per container - all to get isolation that
+# a second uid gives for free. Same result, and the GPU just works.
+#
+# Why Steam at all, when the prefix-clone route already exists: the login that
+# has to render moves out of Wine. Steam's client is a NATIVE Linux binary, so
+# its login UI is native CEF and paints fine, whereas Ubisoft Connect's login
+# inside a Wine prefix is the thing that comes up as a black window. Once a
+# Steam account is linked to a Ubisoft account, Ubisoft Connect inside the
+# prefix authenticates off the Steam ticket and never renders a login at all.
+#
+# WHAT YOU HAVE TO DO BY HAND, once per instance, and why it stays manual:
+#   1. Create the Steam account (Steam's own signup, in the window this opens).
+#   2. Link it to that instance's Ubisoft account on the WEB -
+#      account.ubisoft.com -> Account Information -> Linked Accounts -> Steam.
+#      In a normal browser. This never touches Wine.
+#   3. Install Trackmania (free, Starter Access) in that Steam client.
+#   4. First launch, set the in-game plate to TAS.
+# Creating accounts and typing passwords is not automated here and should not
+# be: a scripted signup or login loop is what gets a batch of accounts banned.
+set -euo pipefail
+
+INSTANCE="${1:?usage: steam-instance <n> [--vnc]}"
+MODE="${2:-}"
+USER_NAME="tmai$(printf '%02d' "$INSTANCE")"
+DISP=$((99 + INSTANCE))
+VNC_PORT=$((5900 + INSTANCE))
+
+getent passwd "$USER_NAME" >/dev/null || {
+  echo "no such user: $USER_NAME" >&2
+  echo "create it with:  sudo useradd -m -b /mnt/4TB/tm2020-ai-users \\" >&2
+  echo "                     -G input,video -s /bin/bash $USER_NAME" >&2
+  exit 1
+}
+
+if [[ "$MODE" == "--vnc" ]]; then
+  # Its own X server, so N instances cannot steal each other's focus and the
+  # whole fleet can run with nobody logged in at the console.
+  pgrep -f "Xvfb :$DISP" >/dev/null || {
+    setsid Xvfb ":$DISP" -screen 0 1600x1000x24 -nolisten tcp \
+      >/dev/null 2>&1 &
+    sleep 2
+  }
+  # env -u WAYLAND_DISPLAY: x11vnc refuses to start at all if it sees a
+  # Wayland session in the environment - "Wayland sessions are as of now only
+  # supported via -rawfb" - even when it is pointed at a plain Xvfb that has
+  # nothing to do with Wayland. Clearing the hint is the whole fix.
+  #
+  # setsid, because this script ends in exec: without its own session the VNC
+  # server is a child of the process that gets replaced by Steam, and it dies
+  # with it.
+  pgrep -f "x11vnc.*:$DISP" >/dev/null || {
+    setsid env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 \
+      x11vnc -display ":$DISP" -rfbport "$VNC_PORT" -forever -shared -nopw \
+             -localhost -quiet >/dev/null 2>&1 &
+    sleep 2
+  }
+  if ! (exec 3<>"/dev/tcp/127.0.0.1/$VNC_PORT") 2>/dev/null; then
+    echo "warning: nothing listening on $VNC_PORT - the display works but you" >&2
+    echo "         will not be able to see it. Check: x11vnc -display :$DISP" >&2
+  fi
+  echo "instance $INSTANCE: display :$DISP, VNC on 127.0.0.1:$VNC_PORT"
+  echo "  view it with:  vncviewer 127.0.0.1:$VNC_PORT"
+  exec sudo -u "$USER_NAME" env DISPLAY=":$DISP" steam
+fi
+
+# On the main display. Needs the desktop session to allow this uid:
+#   xhost +si:localuser:$USER_NAME
+echo "instance $INSTANCE: Steam as $USER_NAME on ${DISPLAY:-:0}"
+exec sudo -u "$USER_NAME" env DISPLAY="${DISPLAY:-:0}" steam
