@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import os
 import re
 import socket
@@ -48,6 +49,7 @@ from .config import TuningConfig, config_path
 from .lidar import BEAM_ANGLES_DEG, Lidar, load_or_fetch
 from .mapdata import FAR, EffectMap, Gates
 from .surfaces import (EFFECT_CLASSES, GROUP_NAMES, N_GROUPS, group_index,
+                       is_road_name,
                        is_border, material_name)
 
 # Grip classes where a slide IS the fast line, so the anti-twitch weave
@@ -143,8 +145,93 @@ OBS_GROUPS = [
     # top_contact: the car is on its roof.
     ("damper", 4), ("steer_angle", 1), ("skidding", 1),
     ("top_contact", 1),
+    # --- HOW FAR IS THE EDGE. APPENDED, same reasoning as above. ---------
+    #
+    # The observation had `offset` (metres from the reference line) and, since
+    # the edge-awareness block, `sides_ahead` (are there barriers?). It never
+    # had the track's WIDTH - `_track_hw` was loaded from the route model and
+    # then read by nothing at all.
+    #
+    # So an offset of 5m was the same number on a 12m-half-width road as on an
+    # 8m platform: comfortable in one case, one car-width from a fall in the
+    # other, and no input distinguished them. The policy could learn "the
+    # barriers stop here" from sides_ahead but never "and the ground stops
+    # THERE", which is the question that actually kills it.
+    #
+    # Measured on Summer 2026-06: 109 of 183 episodes reach CP4 and 2 reach
+    # CP5. Every stalled one dies between 1400m and 1446m, on the unbarriered
+    # platform run (PlatformTechCurve2In -> PlatformTechBaseOnLandHill3),
+    # driving off the side and falling.
+    #
+    # Note what the widths actually are on that track: roads are 6m half-width
+    # and the platforms are 8m. The platforms are WIDER. So the danger is not
+    # narrowness - it is that going wide on a road scrapes a barrier and is
+    # recoverable, while going wide on a platform is a fall. The lethal signal
+    # is therefore the CONJUNCTION "margin low AND sides_ahead 0", which the
+    # policy can only learn once both halves exist. It had sides_ahead already
+    # and no margin at all.
+    #
+    # The occupancy grid cannot substitute: its cells are 32m x 32m, so a
+    # 16m-wide platform sits inside one cell and the lidar reads that whole
+    # cell as solid ground.
+    #
+    #   margin:     (half_width - |offset|) / half_width, clipped 0..1, at the
+    #               car. 1.0 = dead centre, 0.0 = at the edge. Normalised by
+    #               the width so it means the same thing on any piece.
+    #   width_ahead: half_width at each lookahead distance, / 16m. Anticipatory
+    #               in the same way sides_ahead is - a road narrowing into a
+    #               platform is visible before it arrives, not on entry.
+    #
+    # Unknown width reads as 1.0 (wide and safe) rather than 0.0: a model that
+    # believes it is boxed in when it is not drives timidly, which is
+    # recoverable, whereas believing a platform is a motorway is not.
+    ("margin", 1),
+    ("width_ahead", len(LOOKAHEAD)),
+    # --- HOW FAR IS THE END. APPENDED, same reasoning as above. ----------
+    #
+    # Every other line-relative input is LOCAL: `ahead` is the next six points
+    # in the car's own frame, `offset` and `margin` are lateral. Nothing said
+    # where the car was along the lap, so start->CP1 and CP4->CP5 were
+    # indistinguishable states if the geometry rhymed, and the episode's end
+    # arrived from nowhere.
+    #
+    # That matters most for sector drilling: the attempt ends at a stop line
+    # the network cannot see, paying a large terminal bonus the critic has no
+    # way to anticipate - so the value gets smeared over every state that looks
+    # similar. With this, the terminal is predictable and the policy can push
+    # for the line the way a human drilling a sector does.
+    #
+    # Useful outside the curriculum too: on a full lap it is distance to the
+    # finish, which is the "how much is left" signal a racing line depends on.
+    # 1.0 = the whole line remains, 0.0 = at the end.
+    ("dist_to_stop", 1),
+    # --- WHERE AM I ON THIS TRACK. APPENDED. -----------------------------
+    #
+    # Absolute position along the lap, 0.0 at the start line and 1.0 at the
+    # finish. Distinct from dist_to_stop, which is TASK-relative and resets
+    # every time the curriculum advances a sector - this one means the same
+    # thing in every phase and on every episode.
+    #
+    # It is what lets the policy learn the track rather than react to it: a
+    # human knows the hairpin is coming at two thirds distance and brakes for
+    # it before seeing it. Without an absolute position the network only had
+    # the six lookahead points, so two corners of similar shape were the same
+    # state and had to be driven the same way.
+    #
+    # The cost is honest: this invites memorising ONE track, which is the
+    # opposite of a general road driver. It earns its place while chasing a
+    # lap record on a known circuit; drop it when training for generality.
+    ("lap_progress", 1),
 ]
 OBS_DIM = sum(n for _, n in OBS_GROUPS)
+# Width before the margin/width_ahead block. Migrate a 141-dim model forward
+# with tools/migrate_obs.py --old-obs 141.
+OBS_DIM_PRE_MARGIN = OBS_DIM - 1 - len(LOOKAHEAD) - 1
+# Width before dist_to_stop. Migrate a 148-dim model with
+# tools/migrate_obs.py --old-obs 148.
+OBS_DIM_PRE_DIST = OBS_DIM - 2
+# Width before lap_progress. Migrate a 149-dim model with --old-obs 149.
+OBS_DIM_PRE_LAPPOS = OBS_DIM - 1
 # The layout before edge awareness was added. A model saved at this width can
 # be migrated forward; see tools/migrate_obs.py.
 OBS_DIM_PRE_EDGE = OBS_DIM - 4 - len(LOOKAHEAD) - 2 - 3
@@ -360,6 +447,11 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # Orientation basis of the previous control step, for omega.
         self._prev_basis = None
         self._route_jumps = []
+        # Jump patches, resolved to (s_start, s_end) arc-length ranges on the
+        # loaded line. Over one of these the car is MEANT to be airborne and off
+        # the narrow line, so the off-surface / off-line / air penalties are
+        # suppressed there, and the run-up gets a speed carrot.
+        self._jump_s: list[tuple[float, float]] = []
         # Which game this env is driving. Everything that writes to a shared
         # location has to know, because N envs run in N processes against N
         # copies of the game and they all see the same filesystem.
@@ -426,11 +518,29 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.prev_speed = 0.0
         self._next_step_at: float | None = None
         self.overruns = 0
+        # Snapshot at each episode reset, so a per-episode count is
+        # available as well as the run total.
+        self._overruns_at_reset = 0
         self.gear = 0
         self.gear_held = 0
         self.steps = 0
         self.slow_for = 0
         self.moved = False
+        # Furthest progress when the stall timer was last reset.
+        self._stall_ref_s = 0.0
+        self._stalled_for = 0
+        # Curriculum: end the episode at this GATE INDEX instead of the
+        # finish. None = drive the whole lap. Set live by
+        # train.curriculum.SectorCurriculum through VecEnv.set_attr, so a
+        # phase change needs no restart and keeps the replay buffer.
+        self.sector_exit = None
+        # Distance along the line at which to end a sector attempt,
+        # set by the curriculum from the exit gate minus the margin.
+        self.sector_exit_s = None
+        # Sector attempt ended cleanly (not a crash) -> reset by
+        # RESPAWN rather than give-up, to land on the entry gate.
+        self._sector_respawn = False
+        self._sector_entry_t = None
         # Which materials this map has actually put under the wheels. The
         # enum has 81 entries and a track uses about six, so the tuning UI has
         # no way to know which rows matter without being told.
@@ -467,6 +577,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # Non-blocking respawn, so one seat's reset never stalls the others.
         self._respawning = False
         self._respawn_from = 0.0
+        self._respawn_from_s = 0.0
         self._respawn_started = 0.0
         self._respawn_presses = 0
         self._respawn_warned = False
@@ -492,8 +603,16 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.effects: EffectMap | None = None
         self.lidar: Lidar | None = None
         self.cp_taken: set[int] = set()
+        # Markers already paid this episode (see _marker_reward).
+        self._markers_paid: set[int] = set()
+        # |metres| from the line at the last scored step.
+        self._last_offset: float = 0.0
         self._prev_cp_dist: float | None = None
         self._cp_approach_paid = 0.0
+        self._jump_taken_at: set = set()   # jump lips credited this episode
+        self._green_streak = 0             # consecutive in-green speedslide steps
+        self._steps_since_progress = 0
+        self._dv_ema = 0.0
         # Furthest checkpoint index this run has ever reached. Drives the
         # growing episode cap (see _episode_cap_steps).
         # Rolling-window frontier for the growing episode cap: the furthest
@@ -590,6 +709,30 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.max_steps = self._episode_cap_steps()
         self.reset_mode = c.get("reset", "mode", "giveup")
         self.giveup_button = c.get("reset", "button", "b")
+        # Respawn returns the car to the LAST CHECKPOINT PASSED. That is the
+        # only positioning primitive the game offers - there is no teleport,
+        # and the plugin's `goto` switches maps, not positions.
+        #
+        # LAUNCHED respawn, not standstill: it puts the car back roughly two
+        # seconds before that gate carrying the speed it had, rather than
+        # stationary on the line. That is what makes a drilled sector
+        # representative - a sector entered from a dead stop is a different
+        # driving problem from one entered at racing speed, and optimising the
+        # first would teach the wrong thing for the lap.
+        #
+        # Sector 0 is the exception and needs no special case: with no
+        # checkpoint yet passed, respawn returns to the start line, standing -
+        # which is exactly how a lap begins.
+        self.respawn_button = c.get("reset", "respawn_button", "y")
+        self.respawn_hold_ms = float(c.get("reset", "respawn_hold_ms", 120.0))
+        # How far SHORT of the exit gate a sector attempt stops. The whole
+        # trick: cross the gate and respawn takes you to IT, so the sector
+        # cannot be repeated. Stop short and respawn takes you back to the
+        # sector's entry gate instead, so it can be drilled over and over from
+        # a consistent standing start. Must exceed one step of travel - 2m at
+        # 40m/s and 20Hz - or a fast car overshoots the check.
+        self.sector_stop_short_m = float(
+            c.get("stuck", "sector_stop_short_m", 12.0))
         self.finish_button = c.get("reset", "finish_button", "a")
         # How long each reset button is held. In 4-way splitscreen a 250ms tap
         # lands on a frame where that viewport is not the focused input often
@@ -610,6 +753,18 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.skip_button = c.get("reset", "skip_button", "a")
         self.skip_interval = c.get("reset", "skip_interval_ms", 250.0) / 1000.0
         self.stuck_speed = c.get("stuck", "speed", 1.0)
+        # Seconds of no forward progress before an episode is called stuck,
+        # whatever the speed. 0 disables. See the wedge note in the reward.
+        self.no_progress_m = float(c.get("stuck", "no_progress_m", 2.0))
+        # Absolute lap position is a track-MEMORISATION input. Switch it off
+        # for general training and it feeds a constant 0 instead of being
+        # removed: the observation keeps its width, so every model stays
+        # loadable in either mode and no migration is ever needed. Dropping
+        # the dimension would need one, and would strand a policy that had
+        # learned to lean on it.
+        self.use_lap_progress = bool(c.get("line", "use_lap_progress", True))
+        _nps = float(c.get("stuck", "no_progress_s", 6.0))
+        self.no_progress_steps = int(_nps * self.control_hz) if _nps > 0 else 0
         self.stuck_steps = int(c.get("stuck", "seconds", 5.0) * self.control_hz)
         self.max_offset = c.get("line", "max_offset", 30.0)
         self.soft_offset = c.get("line", "soft_offset", 8.0)
@@ -618,6 +773,27 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.cp_strict_order = bool(c.get("line", "cp_strict_order", False))
         r = c.data.get("reward", {})
         self.w_progress = r.get("w_progress", 1.0)
+        # Extra pay per metre on unbarriered (platform) sections.
+        self.w_platform = r.get("w_platform", 0.0)
+        # Hand-placed one-off bonuses at distances along the line. See
+        # _marker_reward. Per-track, in configs/<map>.explore.json:
+        #   "markers": [{"s": 1420, "bonus": 150}, {"s": 1480, "bonus": 150}]
+        raw_markers = self.cfg.data.get("markers") or []
+        self.markers = []
+        for m in raw_markers:
+            try:
+                # max_offset: optional LATERAL limit, metres from the line.
+                # Without one a marker has no width at all - it is a scalar
+                # test on progress - so a car that gains arc length by leaving
+                # the track in roughly the right direction collects it without
+                # ever crossing the spot. None keeps the old behaviour.
+                lim = m.get("max_offset")
+                self.markers.append((float(m["s"]),
+                                     float(m.get("bonus", 100.0)),
+                                     None if lim is None else float(lim)))
+            except (TypeError, ValueError, KeyError):
+                continue
+        self.markers.sort()
         self.step_cost = r.get("step_cost", 0.02)
         self.finish_bonus = r.get("finish_bonus", 100.0)
         self.cp_bonus = r.get("cp_bonus", 0.0)
@@ -634,6 +810,15 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.w_reversal = r.get("w_reversal", 0.0)
         self.w_turbo_use = r.get("w_turbo_use", 0.0)
         self.w_air = r.get("w_air", 0.0)
+        # Jump run-up speed carrot. A jump patch already stops the penalties
+        # from firing over the gap (see _jump_s), but "carry speed into the
+        # take-off" is only learned by trial and error unless it is paid for.
+        # 0 = off (the default): still discovered the hard way. Set > 0 to pay
+        # for approach speed in the jump_approach_m before each take-off, up to
+        # jump_target_kmh.
+        self.w_jump_speed = r.get("w_jump_speed", 0.0)
+        self.jump_approach_m = r.get("jump_approach_m", 40.0)
+        self.jump_target_kmh = r.get("jump_target_kmh", 200.0)
         self.par_speed = r.get("par_speed", 0.0)
         self.charge_unused_time = bool(r.get("charge_unused_time", True))
         self.w_gear = r.get("w_gear", 0.0)
@@ -646,9 +831,25 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.surface_grace = int(c.data.get("surface_grace_steps", 4))
 
         ss = c.data.get("speedslide", {})
-        self.ss_w = ss.get("w", 0.0)
+        self.ss_w = ss.get("w", 0.0)              # per-step reward at full GREEN
         self.ss_w_blue = ss.get("w_blue", 0.0)
         self.ss_floor = ss.get("speed_floor_kmh", 0.0)
+        # Any real slide (orange up) pays this floor; the rest ramps to ss_w
+        # across the band, shaped by ss_gamma so the green end dominates
+        # (gamma>1 = convex: yellow is worth little, green is worth a lot).
+        self.ss_w_any = ss.get("w_any", 0.0)
+        self.ss_gamma = ss.get("gamma", 2.5)
+        # STAYING in green: a multiplier that grows with the consecutive-green
+        # step count, log so it climbs forever but never runs away.
+        self.ss_streak_gain = ss.get("streak_gain", 0.6)
+        self.ss_streak_cap = ss.get("streak_cap", 4.0)
+        # Slide reward pays nothing after this many steps with no new ground
+        # (20Hz -> 15 steps ~= 0.75s). Kills slide-brake-slide farming.
+        self.ss_stall_steps = int(ss.get("stall_steps", 15))
+        # A real speedslide gains speed. Scale the reward by smoothed dv:
+        # accel_floor when flat, 0 when decelerating, up to 1 when pulling.
+        self.ss_accel_floor = ss.get("accel_floor", 0.15)
+        self.ss_accel_gain = ss.get("accel_gain", 3.0)
 
         self.hints = parse_hints(c.data.get("hints"))
         self.marks = c.data.get("marks") or {}
@@ -955,6 +1156,12 @@ class TrackmaniaEnv(gym.Env if gym else object):
             self._air_obs(rec),
             self._omega_obs(dir_, up, left),
             self._chassis_obs(rec),
+            # Appended last, so every index above keeps the value it had at
+            # 141 dims and a 141-wide model migrates by zero-filling these.
+            [self._margin_obs(idx, offset)],
+            self._width_ahead_obs(idx),
+            [self._dist_to_stop_obs()],
+            [self._lap_progress_obs()],
         ]).astype(np.float32)
         return obs, s, offset
 
@@ -1071,6 +1278,191 @@ class TrackmaniaEnv(gym.Env if gym else object):
         except Exception:                                 # noqa: BLE001
             return np.ones(n)
 
+    #: Half-width treated as "wide open" when normalising width_ahead. Roads
+    #: on this game's tech blocks run ~12m half-width and platforms ~8m, so 16
+    #: puts the interesting range in the middle of 0..1 rather than squashed
+    #: against the top.
+    WIDE_M = 16.0
+
+    #: `sides` value the route model gives a barriered road piece.
+    BARRIERED_SIDES = 0.5
+
+    def _margin_obs(self, idx: int, offset: float) -> float:
+        """How much road is left between the car and the edge, 1 = centred.
+
+        `offset` alone cannot answer this. Five metres off the line is
+        comfortable on a 12m-half-width road and one car-width from a fall on
+        an 8m platform, and until now nothing in the observation distinguished
+        them - `_track_hw` was loaded from the route model and read by nothing.
+
+        Normalised BY THE LOCAL WIDTH deliberately, so the number means the
+        same thing everywhere: 1.0 is the middle of whatever you are on, 0.0 is
+        its edge. A policy can then learn one rule ("keep margin up") instead
+        of a different safe-offset constant per block type.
+        """
+        if self._track_hw is None or self.line is None:
+            return 1.0
+        try:
+            hw = float(np.interp(float(self.line.s[idx]), self.line.s,
+                                 np.asarray(self._track_hw, dtype=np.float64)))
+            if hw <= 0.1:
+                return 1.0
+            return float(np.clip(1.0 - abs(offset) / hw, 0.0, 1.0))
+        except Exception:                                 # noqa: BLE001
+            return 1.0
+
+    def _width_ahead_obs(self, idx: int) -> np.ndarray:
+        """Half-width at each lookahead distance, normalised by WIDE_M.
+
+        Anticipatory for the same reason sides_ahead is: a road narrowing into
+        a platform has to be visible BEFORE the car is on it, because by the
+        time the margin at the car has dropped there is no room left to act.
+
+        Unknown reads 1.0 (wide) rather than 0.0. A model that thinks a
+        platform is a motorway drives off it; one that thinks a motorway is a
+        platform merely drives timidly, and that is the recoverable error.
+        """
+        n = len(LOOKAHEAD)
+        if self._track_hw is None or self.line is None:
+            return np.ones(n)
+        try:
+            s_here = float(self.line.s[idx])
+            targets = s_here + np.asarray(LOOKAHEAD, dtype=np.float64)
+            hw = np.interp(targets, self.line.s,
+                           np.asarray(self._track_hw, dtype=np.float64))
+            return np.clip(hw / self.WIDE_M, 0.0, 1.0)
+        except Exception:                                 # noqa: BLE001
+            return np.ones(n)
+
+    def _marker_reward(self) -> float:
+        """One-off bonuses at hand-picked distances along the line.
+
+        WHY, when `progress` already pays per metre: the problem this solves is
+        not signal density, it is CREDIT-ASSIGNMENT DISTANCE. Measured on this
+        track, half the episodes that reach CP4 stop dead at the entrance to a
+        194m unbarriered run and refuse to enter. For entering to look
+        worthwhile, the critic has to carry CP5's bonus backwards across all
+        194m - and every sample it has of that stretch ends badly. A marker
+        halfway across is a nearer, already-achievable target, so the value has
+        half as far to propagate.
+
+        Paid once per episode, and keyed on `max_s` rather than the current
+        position, so it cannot be farmed by reversing over the same spot.
+
+        A PER-TRACK TOOL. Markers are hand-placed scaffolding for one hard
+        section; leave the list empty on any map that does not need it, and
+        remove them once the section is learned.
+        """
+        if not self.markers:
+            return 0.0
+        total = 0.0
+        for i, (at_s, bonus, lim) in enumerate(self.markers):
+            if i in self._markers_paid:
+                continue
+            if lim is not None and abs(self._last_offset) > lim:
+                continue
+            if self.max_s >= at_s:
+                self._markers_paid.add(i)
+                total += bonus
+                print(f"    marker {i} at {at_s:.0f}m reached (+{bonus:.0f})",
+                      flush=True)
+        return total
+
+    def _lap_progress_obs(self) -> float:
+        """How far round the lap the car is, 0 at the start and 1 at the end.
+
+        Uses max_s, the furthest point reached, so it never runs backwards
+        when the car does - the policy is being told where on the track it is,
+        not how much ground it just lost.
+        """
+        if not self.use_lap_progress:
+            return 0.0
+        try:
+            if self.line is None:
+                return 0.0
+            total = float(self.line.length) or 1.0
+            return float(np.clip(self.max_s / total, 0.0, 1.0))
+        except Exception:                                  # noqa: BLE001
+            return 0.0
+
+    def _dist_to_stop_obs(self) -> float:
+        """Fraction of the line still to run before the episode ends.
+
+        1.0 at the start, 0.0 at the stop line. In sector mode that is the
+        sector's stop; otherwise it is the end of the line.
+
+        Normalised by the WHOLE line rather than by the sector, so the number
+        means the same thing in every phase - a sector-relative version would
+        rescale under the policy every time the curriculum advanced.
+        """
+        try:
+            if self.line is None:
+                return 1.0
+            end = self.sector_exit_s if self.sector_exit_s else self.line.length
+            total = float(self.line.length) or 1.0
+            return float(np.clip((end - self.max_s) / total, 0.0, 1.0))
+        except Exception:                                  # noqa: BLE001
+            return 1.0
+
+    def _compute_sector_stop(self) -> None:
+        """Where to stop, in metres along the line, for the current sector.
+
+        Derived here rather than passed in: the env is the only thing that has
+        both the line and the gates, and the gates are not known until the map
+        loads. The curriculum sets a gate INDEX and this turns it into a
+        distance.
+
+        Stops `sector_stop_short_m` before the gate so respawn returns the car
+        to the sector's ENTRY, not its exit.
+        """
+        try:
+            if self.line is None or not self.gates:
+                return
+            idx = self.sector_exit - 1          # gate index of the exit
+            centres = list(getattr(self.gates, "centres", []) or [])
+            if idx >= len(centres):
+                # The last sector's exit is the FINISH, which is not a gate in
+                # `centres` - the plugin reports it as a flag. Its stop line is
+                # the end of the reference line.
+                self.sector_exit_s = max(1.0, float(self.line.length)
+                                         - self.sector_stop_short_m)
+                print(f"  sector {self.sector_exit} (to the finish): stop at "
+                      f"{self.sector_exit_s:.0f}m of {self.line.length:.0f}m",
+                      flush=True)
+                return
+            if idx < 0:
+                return
+            _, s_gate, _ = self.line.project_near(
+                np.asarray(centres[idx], dtype=np.float64), None)
+            stop = float(s_gate) - self.sector_stop_short_m
+            self.sector_exit_s = max(1.0, stop)
+            print(f"  sector {self.sector_exit}: stop at {self.sector_exit_s:.0f}m "
+                  f"({self.sector_stop_short_m:.0f}m short of the gate at "
+                  f"{s_gate:.0f}m)", flush=True)
+        except Exception as ex:                            # noqa: BLE001
+            print(f"  could not place the sector stop line ({ex})", flush=True)
+
+    def _platform_factor(self) -> float:
+        """1.0 on an unbarriered section, 0.0 on barriered road.
+
+        Platform pieces report the SAME material as road (Asphalt/Concrete), so
+        nothing material-keyed can tell them apart. The route model's
+        containment can: 0.0 = no sides, 0.5 = barriered. That is the only
+        signal available, and it is the same one `sides_ahead` feeds the policy.
+        """
+        if self._track_sides is None or self.line is None:
+            return 0.0
+        try:
+            idx = self._line_idx
+            if idx is None:
+                return 0.0
+            sides = float(np.interp(float(self.line.s[idx]), self.line.s,
+                                    np.asarray(self._track_sides,
+                                               dtype=np.float64)))
+            return float(np.clip(1.0 - sides / self.BARRIERED_SIDES, 0.0, 1.0))
+        except Exception:                                 # noqa: BLE001
+            return 0.0
+
     def _lidar_obs(self, pos, dir_, left) -> np.ndarray:
         """How far the ground extends in each direction, in the car's frame.
 
@@ -1151,6 +1543,64 @@ class TrackmaniaEnv(gym.Env if gym else object):
             [rec.get("air_brake", 0.0) or 0.0],
             fx,
         ])
+
+    def _compute_jump_spans(self) -> None:
+        """Turn jump patches ([x0,z0,x1,z1] world) into (s0,s1) arc ranges on
+        the current line, so the reward can ask "is the car over a gap right
+        now" with one number instead of a point-in-polygon test every step.
+
+        Also BRIDGES the lidar over each gap: without ground in the occupancy
+        grid there, the forward beam reports an edge right at the take-off and
+        the policy brakes into it. Fill the corridor with solid cells so the
+        beam marches across and the far side reads as reachable."""
+        self._jump_s = []
+        if self.line is None or not self._route_jumps:
+            return
+        for j in self._route_jumps:
+            try:
+                a = np.array([j[0], 0.0, j[1]], dtype=np.float64)
+                b = np.array([j[2], 0.0, j[3]], dtype=np.float64)
+            except (TypeError, IndexError):
+                continue
+            # project() ignores Y via its own indexing; pass the XZ we have.
+            ia, sa, _ = self.line.project(a)
+            ib, sb, _ = self.line.project(b)
+            lo, hi = sorted((sa, sb))
+            if hi <= lo:
+                continue
+            self._jump_s.append((lo, hi))
+            self._bridge_lidar_gap(a, b,
+                                   float(self.line.points[ia][1]),
+                                   float(self.line.points[ib][1]))
+        self._jump_s.sort()
+
+    def _bridge_lidar_gap(self, a: np.ndarray, b: np.ndarray,
+                          ya: float, yb: float) -> None:
+        """Add solid cells along the a->b corridor (with y lerped) so lidar
+        beams see continuous ground across a jump gap."""
+        grid = getattr(self, "lidar", None)
+        grid = grid.grid if grid is not None else None
+        if grid is None:
+            return
+        dist = float(np.hypot(b[0] - a[0], b[2] - a[2]))
+        steps = max(2, int(dist / (min(grid.block[0], grid.block[2]) * 0.5)) + 1)
+        for k in range(steps + 1):
+            t = k / steps
+            p = (a[0] + (b[0] - a[0]) * t,
+                 ya + (yb - ya) * t,
+                 a[2] + (b[2] - a[2]) * t)
+            cx, cy, cz = grid.world_to_cell(p)
+            for dy in (-1, 0, 1):
+                if cx >= 0 and cy + dy >= 0 and cz >= 0:
+                    grid._solid.add((int(cx) << 24) | ((int(cy) + dy) << 12)
+                                    | int(cz))
+
+    def _over_jump(self, s: float) -> bool:
+        return any(lo <= s <= hi for lo, hi in self._jump_s)
+
+    def _jump_runup(self, s: float) -> bool:
+        return any(lo - self.jump_approach_m <= s < lo
+                   for lo, hi in self._jump_s)
 
     # -- checkpoints ------------------------------------------------------
 
@@ -1338,12 +1788,72 @@ class TrackmaniaEnv(gym.Env if gym else object):
                     self._track_hw = rm.get("half_width")
                     self._track_sides = rm.get("sides")
                     self._route_jumps = rm.get("jumps", [])
+                    self._compute_jump_spans()
                     print(f"  reference line [{rm['source']}]: "
                           f"{len(self.line.points)} pts, "
-                          f"{self.line.length:.0f} m", flush=True)
+                          f"{self.line.length:.0f} m"
+                          + (f"  ({len(self._jump_s)} jump span(s))"
+                             if self._jump_s else ""), flush=True)
             except Exception as ex:                       # noqa: BLE001
                 print(f"  route model unavailable ({ex}) - "
                       f"keeping the provisional line", flush=True)
+        elif self.line is not None and self._track_hw is None:
+            self._adopt_track_geometry(uid)
+
+    def _adopt_track_geometry(self, uid: str | None) -> None:
+        """Give a NON-rebuilt line the map's edge geometry.
+
+        The race stage runs with rebuild_line=False - it is handed an explicit
+        --line and must not re-derive one. But `half_width` and `sides` were
+        only ever loaded inside that rebuild, so the racer had `_track_hw` and
+        `_track_sides` at None, and every edge feature silently returned its
+        safe default: sides_ahead all 1.0 ("fully barriered"), margin 1.0
+        ("dead centre"), width_ahead all 1.0 ("wide open").
+
+        That is 13 of 148 inputs frozen at constants the model was trained to
+        read as real signals - and the three that exist specifically to handle
+        the unbarriered platform run. A policy that could see the edge in
+        explore is blind to it in race, which looks exactly like it has
+        forgotten the track.
+
+        The arrays belong to the MAP, not to any one line - they come from the
+        occupancy dump via roadtrace. They are indexed by the roadtrace line's
+        samples though, so they are transferred by nearest point rather than
+        copied: for each sample of OUR line, take the value at the closest
+        roadtrace sample.
+        """
+        if not uid:
+            return
+        try:
+            import json as _json
+            path = os.path.join(ROOT, "maps", f"{uid}.roadtrace.json")
+            with open(path) as fh:
+                rt = _json.load(fh)
+            src = np.asarray(rt.get("points") or [], dtype=np.float64)
+            hw = rt.get("half_width")
+            sd = rt.get("sides")
+            if src.size == 0 or hw is None or sd is None:
+                return
+            hw = np.asarray(hw, dtype=np.float64)
+            sd = np.asarray(sd, dtype=np.float64)
+            n = min(len(src), len(hw), len(sd))
+            src, hw, sd = src[:n, :3], hw[:n], sd[:n]
+
+            mine = np.asarray(self.line.points, dtype=np.float64)[:, :3]
+            # Nearest roadtrace sample for each of ours, in XZ - height differs
+            # between a driven line and the block ribbon and would dominate.
+            d2 = ((mine[:, None, 0] - src[None, :, 0]) ** 2 +
+                  (mine[:, None, 2] - src[None, :, 2]) ** 2)
+            idx = np.argmin(d2, axis=1)
+            self._track_hw = hw[idx]
+            self._track_sides = sd[idx]
+            unb = int((self._track_sides < 0.25).sum())
+            print(f"  track geometry adopted from roadtrace: "
+                  f"{len(idx)} samples, {unb} unbarriered "
+                  f"({100.0 * unb / max(len(idx), 1):.0f}%)", flush=True)
+        except Exception as ex:                           # noqa: BLE001
+            print(f"  could not adopt track geometry ({ex}) - edge features "
+                  f"will read as 'barriered everywhere'", flush=True)
 
     def _check_input_fidelity(self, rec: dict, steer: float,
                               gas: float) -> None:
@@ -1576,7 +2086,19 @@ class TrackmaniaEnv(gym.Env if gym else object):
         down the slow path - the exact stall it was meant to remove.
         """
         try:
-            self.pad.press(self.giveup_button, self.giveup_hold_ms)
+            # A clean sector attempt resets by RESPAWN, which lands on the
+            # last checkpoint passed - the sector's entry gate, because the
+            # attempt deliberately stopped short of the exit. Give-up would
+            # send it back to the start line and throw away the whole point.
+            # Give-up must be HELD; respawn is a TAP. Holding y for the
+            # give-up duration risks the game reading it as something else -
+            # a double tap is a STANDING respawn, which would throw away the
+            # entry speed the whole drill depends on.
+            if self._sector_respawn:
+                btn, hold = self.respawn_button, self.respawn_hold_ms
+            else:
+                btn, hold = self.giveup_button, self.giveup_hold_ms
+            self.pad.press(btn, hold)
             self._reset_pressed_at = time.time()
             self._reset_from_time = rec.get("race_time") or 0
         except Exception:
@@ -1659,6 +2181,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
     def reset(self, *, seed=None, options=None):
         if gym is not None:
             super().reset(seed=seed)
+        # Baseline for the per-episode overrun count (see "overruns_ep").
+        self._overruns_at_reset = self.overruns
         self.pad.reset()
 
         # A seat NEVER blocks here.
@@ -1778,9 +2302,30 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.steps = 0
         self.slow_for = 0
         self.moved = False
-        self.cp_taken = set()
+        # Furthest progress when the stall timer was last reset.
+        self._stall_ref_s = 0.0
+        self._stalled_for = 0
+        # A LAUNCHED RESPAWN puts the car back on the track shortly before the
+        # checkpoint it respawned to, carrying its momentum - so a sector
+        # attempt does not begin at gate 0, it begins at the sector's entry
+        # gate with those gates already banked by the game.
+        #
+        # Starting cp_taken empty made the episode expect gate 0 next, so
+        # re-crossing the entry gate credited nothing, `cp` stayed 0, and the
+        # sector timer never armed. Seeding the gates behind the car is what
+        # makes the drill loop work at all.
+        entry_gate = (self.sector_exit - 1) if self.sector_exit else 0
+        self.cp_taken = set(range(entry_gate)) if entry_gate > 0 else set()
+        # Markers pay once per EPISODE, not once per run.
+        self._markers_paid = set()
+        self._sector_entry_t = None
+        self._sector_respawn = False
         self._prev_cp_dist = None
         self._cp_approach_paid = 0.0
+        self._jump_taken_at = set()
+        self._green_streak = 0
+        self._steps_since_progress = 0
+        self._dv_ema = 0.0
         self.splits = []
         self.bad_surface_steps = 0
         self.trace = []
@@ -1838,7 +2383,17 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self._respawn_warned = False
         self._respawn_stuck_warned = False
         self._forced_restart_at = 0.0
-        self.pad.press(self.giveup_button, self.giveup_hold_ms)
+        # A clean sector attempt respawns to its entry checkpoint instead of
+        # giving up to the start line. Patching only the early-press site left
+        # this one pressing give-up, so every sector drill silently ran from
+        # the start - the times were a full run, not a sector.
+        # Where the car was when respawn was asked for, so "has it moved back
+        # yet?" is answerable.
+        self._respawn_from_s = float(self.max_s)
+        if self._sector_respawn:
+            self.pad.press(self.respawn_button, self.respawn_hold_ms)
+        else:
+            self.pad.press(self.giveup_button, self.giveup_hold_ms)
 
     def _respawn_landed(self, rec: dict) -> bool:
         """Is this seat's car back on the start line?
@@ -1852,6 +2407,27 @@ class TrackmaniaEnv(gym.Env if gym else object):
             return False
         if rec.get("ui") not in (UI_PLAYING, UI_NONE):
             return False
+        # A LAUNCHED respawn to a checkpoint does not reset the race clock -
+        # it carries on from that checkpoint's split. The clock test below is
+        # written for give-up, which does reset it, so a sector respawn never
+        # read as "landed" and the retry loop hammered the button forever.
+        # Being drivable again IS the landing here.
+        if self._sector_respawn:
+            # ...but only once the car has actually MOVED BACK. Returning True
+            # the moment it is drivable hands control back before the respawn
+            # has happened, so the next attempt starts still sitting past the
+            # stop line and terminates instantly - a 0.00s "sector".
+            try:
+                here = self.line.project_near(
+                    np.asarray(rec.get("pos"), dtype=np.float64),
+                    None)[1]
+            except Exception:                              # noqa: BLE001
+                return True
+            if here < (self._respawn_from_s - 20.0):
+                return True
+            # Fallback: never hang if the car legitimately respawned somewhere
+            # that does not read as "back" (a line that folds on itself).
+            return (time.time() - self._respawn_started) > 3.0
         rt = rec.get("race_time") or 0
         if rt >= max(self._respawn_from - 500, 3000):
             return False
@@ -1927,13 +2503,22 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # if the config sets finish_fallback_after low AND you are not in
         # splitscreen - leave it high for splitscreen.)
         waited = time.time() - self._respawn_started
+        # One press, and only one. Respawn is instant; re-pressing it just
+        # respawns again, which is what "it keeps pressing respawn" looked
+        # like from the game side.
+        if self._sector_respawn:
+            return self._last_obs, 0.0, False, False, {
+                "not_ready": True, "instance": self.instance}
         if waited > self._respawn_presses * 0.8:
             self._respawn_presses += 1
             in_splitscreen = self.slot is not None
             use_finish = (not in_splitscreen
                           and self._respawn_presses > self.finish_fallback_after)
-            button = self.finish_button if use_finish else self.giveup_button
-            hold = self.giveup_hold_ms
+            if self._sector_respawn and not use_finish:
+                button, hold = self.respawn_button, self.respawn_hold_ms
+            else:
+                button = self.finish_button if use_finish else self.giveup_button
+                hold = self.giveup_hold_ms
             if self._respawn_presses > self.finish_fallback_after:
                 hold = max(hold, 600.0)     # longer hold once short taps fail
             self.pad.press(button, hold)
@@ -2078,13 +2663,31 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # between nearby and far samples; rewarding that delta let a parked car
         # farm +80 of "progress". Reaching genuinely new line cannot be
         # oscillated, and dawdling is already charged by the time cost.
+        # Over a jump patch the car is meant to be airborne and off the chord
+        # line; in the run-up it needs to be carrying speed. Gate reward terms
+        # below, and widen the progress clamp - a leap legitimately advances
+        # the arc by a whole gap's worth in one step.
+        over_jump = self._over_jump(self.max_s) or self._over_jump(s)
+        jump_runup = self._jump_runup(self.max_s)
+        _prev_max_s = self.max_s
+
         gain = s - self.max_s
-        if gain > 50.0:               # projection fold jump / respawn warp
+        # Normally a >50m single-step gain is a projection fold / respawn warp
+        # and is zeroed. Across a jump it is the real distance flown, so pay it
+        # (up to a gap's worth) and DO advance max_s - otherwise clearing the
+        # gap earns nothing and the car has no reason to commit.
+        ceiling = 150.0 if over_jump else 50.0
+        if gain > ceiling:
             gain = 0.0               # and do NOT let it poison max_s
         else:
             self.max_s = max(self.max_s, s)
         progress = max(0.0, gain)
         self.prev_s = s
+        # Steps since the car last reached genuinely new ground. Used to gate
+        # rewards that a stalled car could otherwise farm in place - e.g. the
+        # speedslide term: slide -> green -> collect, brake, slide again.
+        self._steps_since_progress = 0 if progress > 0 else \
+            self._steps_since_progress + 1
 
         speed = rec.get("speed", 0.0)
         pos = np.asarray(rec.get("pos", [0, 0, 0]), dtype=np.float64)
@@ -2111,11 +2714,41 @@ class TrackmaniaEnv(gym.Env if gym else object):
             time_cost += self.w_progress * self.par_speed * self.dt
         self.time_cost = time_cost
 
+        # Pay MORE PER METRE across unbarriered sections.
+        #
+        # A PER-TRACK SCAFFOLD, NOT A GENERAL RULE. w_platform defaults to 0.0
+        # and is set only in configs/<map>.explore.json, because the goal is a
+        # driver that handles whatever surface the track puts under it - not one
+        # paid a premium for platforms. It exists to unstick ONE learned
+        # behaviour on ONE track: the policy stopping dead at the entrance to
+        # the unbarriered run between CP4 and CP5. Turn it off (or leave it
+        # unset) once the crossing is learned, and never promote it into
+        # env/config.py DEFAULTS.
+        #
+        # The policy learned to stop just before the platform run, and that was
+        # rational: past CP4 the only outcomes it had ever seen were falling off
+        # and being charged for it, so parking at the entrance banked the lap's
+        # progress for a flat stuck penalty. Lowering the off-road charge
+        # restored the option; this pays for taking it.
+        #
+        # Scaled BY PROGRESS rather than paid per step on purpose - a standing
+        # bonus for being on a platform is farmable by sitting on one, which is
+        # the failure mode we are already trying to leave.
+        plat = self._platform_factor() if self.w_platform else 0.0
         parts = {
             "progress": self.w_progress * progress,
             "step_cost": -time_cost,
             "off_line": -self.w_soft * max(0.0, offset - self.soft_offset),
         }
+        if plat and progress:
+            parts["platform"] = self.w_platform * progress * plat
+        # Lateral distance from the line, for any marker that declares a
+        # max_offset. Taken here rather than stored in _observe because the
+        # reward is the only consumer and this is where `offset` is in scope.
+        self._last_offset = float(offset)
+        mk = self._marker_reward()
+        if mk:
+            parts["marker"] = mk
         # Taking a checkpoint pays once, the first time.
         #
         # Progress along the line is a smooth signal and it is the main one,
@@ -2178,8 +2811,27 @@ class TrackmaniaEnv(gym.Env if gym else object):
         if surface_names and not self.seen_materials.issuperset(surface_names):
             self.seen_materials.update(surface_names)
             self._write_materials()
-        if self.cfg.enabled("surfaces") and surface_names:
-            pen = sum(self.cfg.surface_weight(n) for n in surface_names)
+        if self.cfg.enabled("surfaces") and surface_names and not over_jump:
+            # Per WHEEL, so one tyre clipping the grass costs a quarter of what
+            # putting the whole car on it does.
+            #
+            # Skipped entirely over a jump patch: whatever the wheels graze
+            # mid-flight (scenery below, the far lip) is not a shortcut the car
+            # chose, and charging it teaches the policy to not take the gap.
+            #
+            # An explicit per-material weight wins; everything else that is not
+            # in the `road` grip group falls back to `_non_road`. Without that
+            # fallback only the four listed materials were charged and a
+            # shortcut over Sand, Gravel, Rock, Snow, Green or Dirt earned full
+            # progress reward for free.
+            nr = self.cfg.non_road_weight()
+            pen = 0.0
+            for n in surface_names:
+                w = self.cfg.surface_weight(n)
+                if w:
+                    pen += w
+                elif nr and not is_road_name(n):
+                    pen += nr
             if pen:
                 parts["surface"] = pen
 
@@ -2189,8 +2841,22 @@ class TrackmaniaEnv(gym.Env if gym else object):
             # so a detour to farm a booster still loses.
             parts["turbo_use"] = self.w_turbo_use * max(0.0, gas)
 
-        if self.w_air and not rec.get("ground"):
+        if self.w_air and not rec.get("ground") and not over_jump:
             parts["air"] = -self.w_air
+
+        # Take-off speed bonus: a ONE-OFF at the lip of each jump, scaled by
+        # the speed the car crosses it at. NOT per-step over the run-up - that
+        # integrates to a speed-independent constant (per-step reward is
+        # proportional to speed, time-in-zone is inversely proportional, they
+        # cancel), so it paid the same for creeping as for charging. This pays
+        # only for how fast you actually leave the ramp.
+        if self.w_jump_speed and self._jump_s:
+            for lo, hi in self._jump_s:
+                if _prev_max_s < lo <= self.max_s and lo not in self._jump_taken_at:
+                    self._jump_taken_at.add(lo)
+                    frac = min(1.0, (speed * 3.6) / max(self.jump_target_kmh, 1.0))
+                    parts["jump_speed"] = parts.get("jump_speed", 0.0) \
+                        + self.w_jump_speed * frac
 
         # -- gears --------------------------------------------------------
         #
@@ -2227,6 +2893,10 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # holding the throttle while pinned against a wall earns the first and
         # not the second.
         dv = speed - self.prev_speed
+        # Smoothed acceleration, for the speedslide term below: a real SD gains
+        # speed through the slide, so a slide that only holds (or bleeds)
+        # speed should not pay like one that accelerates.
+        self._dv_ema = 0.85 * self._dv_ema + 0.15 * dv
         if self.cfg.enabled("accel"):
             if self.w_gas and gas > 0:
                 parts["gas"] = self.w_gas * gas
@@ -2253,8 +2923,30 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 rec.get("side_speed", 0.0) or 0.0, speed, fl,
                 floor_kmh=self.ss_floor)
             self.sd_grade, self.sd_score = grade, score
+            if grade == "green":
+                self._green_streak += 1
+            else:
+                self._green_streak = 0
+            # A slide only counts if the car is still getting down the track.
+            # Slide-brake-slide in place makes no new ground, so it pays
+            # nothing - which is what kills the farm.
+            if self._steps_since_progress > self.ss_stall_steps:
+                score = 0.0
+                self._green_streak = 0
             if self.ss_w and score:
-                parts["speedslide"] = self.ss_w * score
+                # floor for ANY slide, then a convex ramp to ss_w at full green
+                shaped = score ** max(self.ss_gamma, 0.1)
+                r = self.ss_w_any + (self.ss_w - self.ss_w_any) * shaped
+                # STAYING in green pays far more than touching it
+                if grade == "green" and self.ss_streak_gain:
+                    mult = 1.0 + self.ss_streak_gain * math.log1p(self._green_streak)
+                    r *= min(mult, self.ss_streak_cap)
+                # A real SD ACCELERATES. Scale by smoothed dv: a slide that
+                # only holds speed pays the floor fraction, one that bleeds
+                # speed pays nothing, one that pulls pays full.
+                accel_f = self.ss_accel_floor + self._dv_ema * self.ss_accel_gain
+                r *= max(0.0, min(1.0, accel_f))
+                parts["speedslide"] = r
             elif self.ss_w_blue and grade == "blue":
                 parts["speedslide"] = -self.ss_w_blue
 
@@ -2314,17 +3006,55 @@ class TrackmaniaEnv(gym.Env if gym else object):
 
         race_time = rec.get("race_time")
 
+        # --- sector curriculum ------------------------------------------
+        #
+        # Ending at the target gate is what makes drilling a sector cheaper
+        # than a lap, and the bonus is what stops a partial lap reading as a
+        # failure: without it the policy would be paid to abandon the sector,
+        # because a finish bonus it can no longer reach is a finish bonus it
+        # stops chasing.
+        sector_done = False
+        overshot = False
+        if self.sector_exit is not None and self.sector_exit_s is None:
+            self._compute_sector_stop()
+        if self.sector_exit is not None and not finished:
+            # Note the moment the sector was ENTERED, so it can be timed
+            # without the game's split - which we deliberately never earn,
+            # because earning it means crossing the gate.
+            if self._sector_entry_t is None and cp >= self.sector_exit - 1:
+                self._sector_entry_t = race_time
+            if self.sector_exit_s is not None and self.max_s >= self.sector_exit_s:
+                sector_done = True
+                terminated = True
+                self._sector_respawn = True
+            elif cp >= self.sector_exit:
+                # Overshot the stop line and took the gate anyway. Respawn now
+                # lands on the EXIT gate, so the next attempt would silently
+                # drill the following sector. Fall back to a full reset to
+                # resync rather than quietly train the wrong thing.
+                sector_done = True
+                overshot = True
+                terminated = True
+                self._sector_respawn = False
+
         # Surfaces that end the run outright. This is the honest way to express
         # "don't crash into the barriers": a -500 per-step penalty would swamp
         # every other term and teach the policy that the reward is broken,
         # whereas ending the episode says "that was a crash". Empty the list
         # later to let it hug the edges.
         bad = self.cfg.terminate_surfaces()
-        if bad and surface_names:
+        if bad and surface_names and not over_jump:
             if bad.intersection(surface_names):
                 self.bad_surface_steps += 1
             else:
                 self.bad_surface_steps = 0
+        elif over_jump:
+            self.bad_surface_steps = 0
+
+        # Over a jump the line is a straight chord and the car flies an arc, so
+        # it is legitimately far from the line - widen the tolerance rather
+        # than end the episode for doing the jump right.
+        eff_max_offset = self.max_offset * (4.0 if over_jump else 1.0)
 
         if finished:
             parts["finish"] = self.finish_bonus
@@ -2332,7 +3062,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         elif self.bad_surface_steps >= self.surface_grace:
             parts["surface_term"] = -self.off_line_penalty
             terminated = True
-        elif offset > self.max_offset:
+        elif offset > eff_max_offset:
             parts["off_line_term"] = -self.off_line_penalty
             terminated = True
         else:
@@ -2346,6 +3076,26 @@ class TrackmaniaEnv(gym.Env if gym else object):
             if self.moved and self.slow_for >= self.stuck_steps:
                 parts["stuck"] = -self.stuck_penalty
                 terminated = True
+            # WEDGED BUT MOVING. The check above only sees standing still, so a
+            # car jammed against a wall that rocks back and forth - throttle,
+            # reverse, throttle - keeps speed above the threshold and resets
+            # the counter every step. Those episodes run to the full cap: ~88s
+            # at 20Hz is 1760 transitions of a car achieving nothing, and they
+            # dominate the buffer precisely because they last longest.
+            #
+            # Progress along the line is the honest test. max_s only ever
+            # increases, so "no new ground for N seconds" catches the wedge
+            # without a speed threshold to fool. Generous by default, because a
+            # car legitimately reversing to recover a corner must be allowed to.
+            elif self.moved and self.no_progress_steps > 0:
+                if self.max_s > self._stall_ref_s + self.no_progress_m:
+                    self._stall_ref_s = self.max_s
+                    self._stalled_for = 0
+                else:
+                    self._stalled_for += 1
+                    if self._stalled_for >= self.no_progress_steps:
+                        parts["stuck"] = -self.stuck_penalty
+                        terminated = True
 
         # An episode that ends in failure is charged for the time it did not
         # use. Without this, a per-step time cost makes crashing PROFITABLE:
@@ -2353,7 +3103,12 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # worth far more than any crash penalty, and the policy learns to
         # drive into the nearest wall to stop the bleeding. A finish is never
         # charged - getting there sooner is the whole objective.
-        if terminated and not finished and self.charge_unused_time:
+        if sector_done:
+            # Same weight as a finish: completing the sector IS the objective
+            # for this phase, so it must not be scored as a failed lap.
+            parts["sector"] = self.finish_bonus
+        if terminated and not finished and not sector_done \
+                and self.charge_unused_time:
             unused = max(0, self.max_steps - self.steps)
             if unused:
                 parts["unused_time"] = -self.time_cost * unused
@@ -2370,6 +3125,12 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 "distance": s, "start_distance": self.start_s,
                 "max_distance": self.max_s, "instance": self.instance,
                 "overruns": self.overruns,
+                # Overruns THIS EPISODE. `overruns` is cumulative for the life
+                # of the env and is never reset, so dividing it by one
+                # episode's step count overstates the rate by however many
+                # episodes have already run - which read as "slip climbing from
+                # 1% to 25%" when the true rate was under 1% throughout.
+                "overruns_ep": self.overruns - self._overruns_at_reset,
                 "empty_records": self.empty_records,
                 "not_ready_steps": self.not_ready_steps,
                 # Named so the panel and the WHY log can say *which* slide
@@ -2383,7 +3144,18 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 # replay buffer keeps transitions scored under older ones, and
                 # that mixture is a real cause of "it suddenly got worse".
                 "cfg_gen": self.cfg.generation}
-        if finished:
+        if sector_done:
+            # Timed from entering the sector to the stop line - our own clock,
+            # since the game's split for the exit gate is never earned. It is
+            # a consistent measure across attempts, which is all a "better than
+            # last time" comparison needs.
+            if self._sector_entry_t is not None and race_time is not None:
+                info["sector_time"] = round(
+                    (race_time - self._sector_entry_t) / 1000.0, 3)
+            info["sector_exit"] = self.sector_exit
+            info["sector_overshot"] = overshot
+            info["reason"] = "SECTOR-OVER" if overshot else "SECTOR"
+        elif finished:
             info["finished"] = True
         elif terminated:
             info["reason"] = ("surface" if "surface_term" in parts else

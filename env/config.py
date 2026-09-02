@@ -248,6 +248,24 @@ DEFAULTS: dict = {
         # 0 means use SDHelper's own per-surface floor (400km/h on road,
         # 200 on grass and dirt). Override only to experiment.
         "speed_floor_kmh": 0.0,
+        # Floor for ANY real slide (orange up); the reward then ramps to `w`
+        # at full green. "Any speedslide beats no speedslide."
+        "w_any": 0.0,
+        # Exponent on the 0..1 score. >1 is convex - yellow is worth little,
+        # the reward climbs steeply into green.
+        "gamma": 2.5,
+        # STAYING in green: green reward *= 1 + streak_gain*ln(1+green_steps),
+        # capped at streak_cap. A held slide pays far more than a flick through.
+        "streak_gain": 0.6,
+        "streak_cap": 4.0,
+        # Slide reward stops after this many steps with no new ground -
+        # slide-brake-slide in place then earns nothing.
+        "stall_steps": 15,
+        # A real speedslide accelerates. Reward is scaled by smoothed dv:
+        # accel_floor when speed is flat, 0 when bleeding speed, up to 1 when
+        # the slide is pulling.
+        "accel_floor": 0.15,
+        "accel_gain": 3.0,
     },
     # Is the game actually applying what we send?
     #
@@ -445,6 +463,24 @@ class TuningConfig:
     def surface_weight(self, name: str) -> float:
         try:
             return float(self.data.get("surfaces", {}).get(name, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def non_road_weight(self) -> float:
+        """Penalty per wheel per step for a surface that is not road.
+
+        The per-material `surfaces` table only charges what someone remembered
+        to list - it had Grass, Water, DirtRoad and Rubber, which left Sand,
+        Gravel, Rock, Snow, Ice, Green, Wheat, Dirt and Plastic completely
+        free. A shortcut across any of those was pure profit: the progress term
+        paid out and nothing charged for it.
+
+        This is the floor for everything not in the `road` grip group. An
+        explicit entry in `surfaces` still wins, so a surface that deserves a
+        harsher or gentler number keeps it.
+        """
+        try:
+            return float(self.data.get("surfaces", {}).get("_non_road", 0.0))
         except (TypeError, ValueError):
             return 0.0
 

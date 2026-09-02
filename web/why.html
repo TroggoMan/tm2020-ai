@@ -1,0 +1,161 @@
+<!-- WHY overlay for an OBS browser source, PORTRAIT layout.
+     Served at /why. Its own page rather than part of index.html: a browser
+     source wants one thing, readable at stream resolution, on a transparent
+     background, with no controls to mis-click.
+
+     Designed for a tall narrow column sitting BESIDE the game view, not over
+     it. Everything stacks; nothing relies on horizontal room. The reward terms
+     are an aligned two-column list rather than a horizontal wrap, because in a
+     narrow box a wrap splits term/value pairs across lines and becomes soup. -->
+<meta charset="utf-8">
+<title>WHY</title>
+<style>
+  :root {
+    --bg: rgba(10,12,16,0.78);
+    --fg: #e9edf4;
+    --dim: #7f8b9c;
+    --dimmer: #5a6472;
+    --good: #5ce07d;
+    --bad: #ff6b6b;
+    --warn: #ffc857;
+    --line: rgba(255,255,255,0.07);
+    --gap: 10px;
+  }
+  html, body { margin: 0; background: transparent; }
+  body.solid { background: #0a0c10; }
+
+  #wrap {
+    font: var(--fs, 15px)/1.42 ui-monospace, "JetBrains Mono", Menlo,
+          Consolas, monospace;
+    color: var(--fg);
+    background: var(--bg);
+    padding: 12px 14px 16px;
+    box-sizing: border-box;
+    min-height: 100vh;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+  }
+
+  header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid var(--line); padding-bottom: 7px;
+    margin-bottom: var(--gap);
+  }
+  header .t { font-size: 12px; letter-spacing: .2em; text-transform: uppercase;
+              color: var(--dim); font-weight: 700; }
+  header .s { font-size: 12px; color: var(--dimmer); }
+
+  .ep { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .ep:last-child { border-bottom: none; }
+
+  /* Line 1: the two things you read first, at opposite ends. */
+  .top { display: flex; justify-content: space-between; align-items: baseline;
+         gap: 8px; }
+  .epno { color: var(--dim); font-size: 13px; }
+  .reason { font-weight: 700; font-size: 15px; letter-spacing: .02em; }
+  .FINISH { color: var(--good); }
+  .stuck, .off_line, .surface_term, .aborted { color: var(--bad); }
+  .timeout { color: var(--warn); }
+
+  /* Line 2: metrics on ONE row but as a 3-up grid, so they never wrap
+     unevenly however narrow the column gets. */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr);
+           gap: 4px; margin: 6px 0 2px; }
+  .stat { background: rgba(255,255,255,0.045); border-radius: 4px;
+          padding: 3px 6px; }
+  .stat .k { display: block; font-size: 10px; letter-spacing: .08em;
+             text-transform: uppercase; color: var(--dimmer); }
+  .stat .v { font-size: 14px; font-weight: 600; }
+
+  /* Reward terms: aligned pairs, one per line. Vertical space is what a
+     portrait column has, so spend it here rather than wrapping sideways. */
+  .terms { margin: 7px 0 0; }
+  .term { display: flex; justify-content: space-between; gap: 10px;
+          font-size: 13px; padding: 1px 0; }
+  .term .n { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; }
+  .term .v { font-variant-numeric: tabular-nums; font-weight: 600;
+             flex: 0 0 auto; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+
+  .why { margin: 8px 0 0; padding: 0; list-style: none; }
+  .why li { color: var(--fg); opacity: .9; font-size: 13px; margin: 4px 0;
+            padding-left: 13px; position: relative; }
+  .why li::before { content: "\203A"; position: absolute; left: 0;
+                    color: var(--dimmer); }
+  #err { color: var(--bad); font-size: 13px; margin-top: 8px; }
+</style>
+
+<div id="wrap">
+  <header><span class="t">Why</span><span class="s" id="meta">connecting…</span></header>
+  <div id="out"></div>
+  <div id="err"></div>
+</div>
+
+<script>
+const Q = new URLSearchParams(location.search);
+if (Q.get('solid')) document.body.classList.add('solid');
+// Overridable from the OBS source URL, so one page serves several layouts.
+const N     = Math.max(1, Math.min(20, +(Q.get('n') || 5)));
+const EVERY = Math.max(500, +(Q.get('ms') || 2000));
+const TERMS = Math.max(0, Math.min(10, +(Q.get('terms') ?? 5)));
+if (Q.get('fs')) document.documentElement.style.setProperty('--fs', Q.get('fs') + 'px');
+
+function num(v, dp) {
+  if (v === null || v === undefined) return '-';
+  if (typeof v !== 'number') return v;
+  return Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(dp ?? 1);
+}
+
+// Biggest reward contributors first. The point of the WHY log is which TERM
+// the return came from, so this leads with that rather than the total.
+function terms(parts) {
+  if (!parts || !TERMS) return '';
+  return Object.entries(parts)
+    .filter(([, v]) => Math.abs(v) > 0.05)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, TERMS)
+    .map(([k, v]) => `<div class="term"><span class="n">${k}</span>` +
+         `<span class="v ${v > 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}` +
+         `${num(v)}</span></div>`)
+    .join('');
+}
+
+async function tick() {
+  try {
+    const r = await fetch('/api/why', {cache: 'no-store'});
+    const all = (await r.json()).entries || [];
+    document.getElementById('err').textContent = '';
+    if (!all.length) {
+      document.getElementById('meta').textContent = 'no episodes yet';
+      document.getElementById('out').innerHTML = '';
+      return;
+    }
+    const eps = all.slice(-N).reverse();
+    const last = eps[0];
+    document.getElementById('meta').textContent =
+      `ep ${last.episode} · ${((last.step || 0) / 1000).toFixed(0)}k steps`;
+    document.getElementById('out').innerHTML = eps.map(e => `
+      <div class="ep">
+        <div class="top">
+          <span class="epno">ep ${e.episode}</span>
+          <span class="reason ${e.reason}">${e.reason ?? '?'}</span>
+        </div>
+        <div class="stats">
+          <span class="stat"><span class="k">cp</span>
+            <span class="v">${e.cp ?? 0}/${e.cp_total ?? 0}</span></span>
+          <span class="stat"><span class="k">dist</span>
+            <span class="v">${num(e.max_distance ?? e.distance, 0)}m</span></span>
+          <span class="stat"><span class="k">return</span>
+            <span class="v">${num(e['return'], 0)}</span></span>
+        </div>
+        <div class="terms">${terms(e.reward_parts)}</div>
+        <ul class="why">${(e.why || []).map(w => `<li>${w}</li>`).join('')}</ul>
+      </div>`).join('');
+  } catch (ex) {
+    document.getElementById('err').textContent = 'panel unreachable: ' + ex;
+  }
+}
+tick();
+setInterval(tick, EVERY);
+</script>

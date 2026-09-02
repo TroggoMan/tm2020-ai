@@ -13,27 +13,47 @@ things worth keeping, and they are not the same thing:
 
 The racer is given both, and is deliberately given the first one *loosely*.
 
-    the explored path  ->  smoothed  ->  the progress axis and the lookahead
+    the ROUTE MODEL   ->  unchanged ->  the progress axis and the lookahead
     the occupancy grid ->  unchanged ->  the lidar
     the landmarks      ->  unchanged ->  the checkpoint gates
 
-Why smoothed, and why loose: a line recorded by driving contains every
-correction the driver made, and the racer's lookahead points and off-line
-penalty both come off that line. Handing over the raw explore trace makes the
-explorer's wandering the *target* - the racer would be paid to reproduce it.
-So the handover smooths the path, widens the off-line tolerance and drops its
-weight to near nothing. The line then does what it should: it says which way
-round the track goes and how far along you are. Where the road actually is
-comes from the lidar, and how fast you get round is left to the racer.
+WHICH LINE, and why it matters more than it looks. 32 of the 148 observation
+dims are line-relative: six lookahead points (xyz each), `offset`,
+`sides_ahead`, `margin`, `width_ahead`. Hand the racer a DIFFERENT line from
+the one the explorer trained against and all 32 shift at once, so the policy
+has to rediscover the spatial relationship - it visibly relearns the track,
+which is the opposite of the point of an explore stage.
 
-The racer also starts from **fresh weights**. Nothing is copied from the
-explore policy - it was trained on a different reward for a different job, and
-seeding from it is the other way to accidentally inherit the wandering.
+So the racer is handed the route model itself (roadtrace plus any panel edits)
+whenever roadtrace covered the map, and only falls back to a smoothed
+best-trace line when it did not. Measured on Summer 2026-06: the trace-derived
+line sat a median 4.0m from the roadtrace line (18.8m at worst) and the racer
+crawled; on the same geometry (0.21m) it reached CP3 in its first three
+episodes and finished on its fourth.
+
+Looseness is a separate lever, and still applied: RACE_PROFILE widens the
+off-line tolerance and drops its weight to near nothing, so the line says which
+way round the track goes and how far along you are, without the racer being
+paid to trace it. Where the road actually is comes from the lidar, and how fast
+you get round is left to the racer.
+
+The racer INHERITS the explore weights: do_handover execs the race stage with
+`--init-from <explore model>`. This docstring claimed the opposite - "starts
+from fresh weights, nothing is copied" - for long enough to mislead a reading
+of the code, so check train_sac.do_handover rather than trusting prose here.
+
+The point of the loose line above is what stops the wandering being inherited,
+and it does not depend on the weights being fresh: the explore policy's basic
+car control (throttle, not spinning, staying on a road) is worth keeping, and
+retraining it from scratch on the race reward wastes it. What must not be
+inherited is the explored PATH as a target, which the smoothing and the
+near-zero `w_soft` handle.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -64,6 +84,13 @@ class HandoverWatch(BaseCallback):
         finishes, before calling it done.
     """
 
+    #: Where the live countdown is published for the panel and the stream
+    #: overlays. A file rather than log-scraping: the "will stop after N" line
+    #: is printed once at startup and scrolls out of the stdout tail within
+    #: minutes, so anything parsing the tail loses the target and can only
+    #: guess at it.
+    STATE_FILE = "handover.json"
+
     def __init__(self, finishes: int = 3, patience: int = 25, verbose: int = 0):
         super().__init__(verbose)
         self.target = int(finishes)
@@ -72,11 +99,40 @@ class HandoverWatch(BaseCallback):
         self.best_ms: int | None = None
         self.since_best = 0
         self.done = False
+        self.state_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "logs", self.STATE_FILE)
+        self._publish()
+
+    def _publish(self) -> None:
+        """Write the countdown to disk. Never allowed to break a run."""
+        try:
+            os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({
+                    "finishes": self.finishes,
+                    "target": self.target,
+                    "since_best": self.since_best,
+                    "patience": self.patience,
+                    "best_ms": self.best_ms,
+                    "done": self.done,
+                    # What is still outstanding, so a reader does not have to
+                    # re-derive the two-condition rule.
+                    "finishes_left": max(0, self.target - self.finishes),
+                    "stall_left": max(0, self.patience - self.since_best),
+                    "updated": time.time(),
+                }, f)
+            os.replace(tmp, self.state_path)
+        except (OSError, TypeError):
+            pass
 
     def _on_step(self) -> bool:
+        saw_finish = False
         for info in (self.locals.get("infos") or []):
             if not info or not info.get("finished"):
                 continue
+            saw_finish = True
             self.finishes += 1
             t = info.get("race_time")
             if t is not None and (self.best_ms is None or int(t) < self.best_ms):
@@ -89,9 +145,16 @@ class HandoverWatch(BaseCallback):
                 print(f"  explore: finish #{self.finishes}, no improvement "
                       f"({self.since_best}/{self.patience})", flush=True)
 
+        # Only on a finish: this runs every control step, and rewriting the
+        # file 40 times a second would be pure churn for a number that cannot
+        # have changed.
+        if saw_finish:
+            self._publish()
+
         if (not self.done and self.finishes >= self.target
                 and self.since_best >= self.patience):
             self.done = True
+            self._publish()
             print(f"\nexplore stage done: {self.finishes} finishes, best "
                   f"{self.best_ms / 1000.0:.3f}s, no improvement in "
                   f"{self.patience} finishes. Handing over.\n", flush=True)
@@ -154,9 +217,76 @@ def smooth_points(points: np.ndarray, window_m: float = 30.0,
     return pts
 
 
+def route_model_line(root: str, map_uid: str, min_coverage: float = 0.75,
+                     out: str | None = None) -> str | None:
+    """Hand the racer the line the EXPLORER ACTUALLY TRAINED AGAINST.
+
+    This is preferred over re-deriving one from a trace, and the reason is
+    measurable. 32 of the 148 observation dims are line-relative - the six
+    lookahead points (xyz each), `offset`, `sides_ahead`, `margin` and
+    `width_ahead`. Hand the policy a different line and all 32 shift at once.
+
+    Measured on Summer 2026-06: the smoothed best-trace line sat a median 4.0m
+    from the roadtrace line the explorer trained on, 9.6m at p90 and 18.8m at
+    worst, and was 1713m against 1835m. The racer visibly relearned the track
+    from scratch - which is the exact opposite of what the explore stage is
+    for. On the same geometry (median separation 0.21m) it reached CP3 on its
+    first three episodes and finished on its fourth.
+
+    build_race_line's assumption - that an explorer's line is provisional junk
+    cutting through scenery - holds for the PROVISIONAL layer, not for
+    roadtrace, which follows the map's own block ribbon and carries half_width
+    and sides natively. When roadtrace covered the map well, re-deriving a line
+    from one driven lap throws away better geometry AND breaks the transfer.
+
+    Returns None when there is no good-enough roadtrace, so the caller can fall
+    back to the trace-derived line.
+    """
+    src = os.path.join(root, "maps", f"{map_uid}.roadtrace.json")
+    try:
+        with open(src) as f:
+            rt = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    cover = float(rt.get("coverage") or 0.0)
+    pts = rt.get("points") or []
+    if cover < min_coverage or len(pts) < 8:
+        print(f"handover: roadtrace coverage {cover:.0%} (<{min_coverage:.0%}) "
+              f"- falling back to the explored trace", flush=True)
+        return None
+
+    # Splice the panel's route edits in, exactly as env.routemodel does, so the
+    # racer gets what the explorer had - hand-drawn corrections included.
+    arr = np.asarray([p[:3] for p in pts], dtype=np.float64)
+    try:
+        from env.routemodel import load_edits, _apply_patches
+        patches = load_edits(root, map_uid)
+        if patches:
+            arr, _ = _apply_patches(arr, patches)
+            print(f"handover: spliced {len(patches)} route edit(s)", flush=True)
+    except Exception as ex:                                # noqa: BLE001
+        print(f"handover: could not splice route edits ({ex})", flush=True)
+
+    line = Centerline(arr, spacing=2.0)
+    out = out or os.path.join(root, "lines", f"{map_uid}-roadtrace.json")
+    line.save(out, map_uid=map_uid)
+    print(f"handover: route model -> {out}", flush=True)
+    print(f"  {line.length:.0f}m, {len(line.points)} pts, roadtrace coverage "
+          f"{cover:.0%} - the SAME geometry the explorer trained against, so "
+          f"the driving transfers instead of being relearned", flush=True)
+    return out
+
+
 def build_race_line(root: str, map_uid: str, smooth_m: float = 30.0,
                     out: str | None = None) -> str | None:
-    """Turn the best explore trace into the race stage's reference line."""
+    """The race stage's reference line.
+
+    Prefers the route model (see route_model_line); only smooths a driven trace
+    when there is no usable roadtrace for the map.
+    """
+    from_route = route_model_line(root, map_uid, out=out)
+    if from_route:
+        return from_route
     trace = best_trace(root, map_uid)
     if not trace:
         print(f"handover: no traces for {map_uid} - nothing to hand over",

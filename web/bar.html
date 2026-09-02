@@ -1,0 +1,294 @@
+<!-- Horizontal training status bar for an OBS browser source.
+     Served at /bar. Sits UNDER the game view; the tall WHY column at /why is
+     its portrait counterpart and they deliberately show different things:
+     /why is per-episode detail, /bar is run-level state that barely changes.
+
+     Everything is one flex row of fixed-shape cells, so it degrades by
+     dropping cells off the end rather than reflowing into two ragged lines. -->
+<meta charset="utf-8">
+<title>Training</title>
+<style>
+  :root {
+    --bg: rgba(10,12,16,0.80);
+    --fg: #e9edf4;
+    --dim: #7f8b9c;
+    --dimmer: #58626f;
+    --good: #5ce07d;
+    --bad: #ff6b6b;
+    --warn: #ffc857;
+    --line: rgba(255,255,255,0.09);
+  }
+  html, body { margin: 0; background: transparent; }
+  body.solid { background: #0a0c10; }
+
+  #bar {
+    font: var(--fs, 15px)/1.2 ui-monospace, "JetBrains Mono", Menlo,
+          Consolas, monospace;
+    color: var(--fg); background: var(--bg);
+    display: flex; align-items: stretch; gap: 0;
+    padding: 0 4px; box-sizing: border-box; min-height: 100vh;
+    overflow: hidden;                 /* drop cells, never wrap to two rows */
+    text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+  }
+  .cell {
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 8px 14px; border-right: 1px solid var(--line);
+    white-space: nowrap; flex: 0 0 auto;
+  }
+  .cell:last-child { border-right: none; }
+  .k { font-size: 10px; letter-spacing: .13em; text-transform: uppercase;
+       color: var(--dimmer); margin-bottom: 3px; }
+  .v { font-size: calc(var(--fs, 15px) * 1.25); font-weight: 700;
+       font-variant-numeric: tabular-nums; }
+  .sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  /* The headline cell. It is content-sized like every other cell and must NOT
+     be flex:1 - given the slack it grew to about a third of a 2560px bar for
+     three words, pushing every actual metric into a huddle on the right. */
+  .wide { flex: 0 0 auto; max-width: 30ch; }
+  .wide .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The slack goes here instead, so leftover width lands at the far end
+     rather than inflating a cell. */
+  .spacer { flex: 1 1 auto; border-right: none; }
+  .on  { color: var(--good); }
+  .off { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: baseline; }
+</style>
+
+<div id="bar"><div class="cell"><span class="k">status</span>
+  <span class="v" id="boot">connecting…</span></div></div>
+
+<script>
+const Q = new URLSearchParams(location.search);
+if (Q.get('solid')) document.body.classList.add('solid');
+if (Q.get('fs')) document.documentElement.style.setProperty('--fs', Q.get('fs') + 'px');
+const EVERY  = Math.max(1000, +(Q.get('ms') || 3000));
+const WINDOW = Math.max(5, +(Q.get('win') || 20));   // episodes for the rates
+// What we are training, in words. The model filename is an artefact name, not
+// an answer to "what is this learning" - so the headline is a label you set
+// once in the OBS source URL, and the filename drops to the sub-line where it
+// is still available for debugging.
+// Surface-neutral default: a road driver and a dirt driver are DIFFERENT
+// models trained on different surfaces - do not let the headline imply one is
+// the other. Set ?what=General%20dirt%20driver (or whatever this run is) on
+// the OBS browser source.
+const WHAT   = Q.get('what') || 'TM2020 driver';
+
+const MAPS = {                                        // uid -> friendly name
+  'mIAmhaktmdIeoA9nVTQarm8Ck91': 'Summer 2026 - 06',
+  '6fhmufQJh2EUZI36i6CiE9vvule': 'Summer 2026 - 02',
+  'VO0nIzBIyHoVjYWmHNvNnl2IUCd': 'Wide left, mid right',
+  '3TKGZO6WiXCd8QLO8LtC2gD2Ow0': 'Straight Line',
+};
+
+function k(n) {
+  if (n === null || n === undefined) return '-';
+  return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M'
+       : n >= 1000 ? (n / 1000).toFixed(0) + 'k' : String(n);
+}
+function cell(key, val, sub, cls) {
+  return `<div class="cell ${cls || ''}"><span class="k">${key}</span>` +
+         `<span class="v">${val}</span>` +
+         (sub ? `<span class="sub">${sub}</span>` : '') + `</div>`;
+}
+
+// LAST RESORT ONLY. This parses the stdout the PANEL captured, which exists
+// only for a trainer the panel itself launched. A trainer started from a
+// shell (setsid/nohup, which is how long runs are actually started) leaves
+// this holding the last panel-launched run's output - so it happily reported
+// a dead run's model name and best lap while a completely different model was
+// driving. /api/lineage and /api/handover are written by the LIVE trainer and
+// are preferred everywhere below; this only fills gaps.
+function fromLog(log) {
+  const out = {best: null, name: null, stage: null};
+  if (!log) return out;
+  const b = [...log.matchAll(/best=([0-9.]+)s/g)].pop();
+  if (b) out.best = parseFloat(b[1]);
+  const n = log.match(/models\/([A-Za-z0-9_.-]+)\.zip/);
+  if (n) out.name = n[1];
+  if (/--stage\s+race|starting the race stage/.test(log)) out.stage = 'race';
+  else if (/--stage\s+explore|reference line \[/.test(log)) out.stage = 'explore';
+  return out;
+}
+
+// How old this AI is, and what it is built on.
+//
+// Age is measured from `born`, a fixed timestamp inherited across resumes, so
+// it is the age of the LINEAGE rather than of the file on disk - a model
+// carried through five restarts would otherwise look newly born each time.
+// It also ticks up on its own between writes, which a stored duration cannot.
+function dur(sec) {
+  if (!(sec > 0)) return '0m';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+function modelAge(md) {
+  if (!md || !md.name) return '';
+  // "2026-08-31 14:52:03" is local time with a space; Safari and Firefox
+  // refuse that in Date(), so hand them an ISO string instead of NaN.
+  const born = md.born ? new Date(md.born.replace(' ', 'T')) : null;
+  const age  = born && !isNaN(born) ? (Date.now() - born.getTime()) / 1000 : null;
+  // "scratch" is worth showing plainly - it is the difference between a fresh
+  // policy and one carrying habits from an older observation space.
+  const base = md.based_on && md.based_on !== 'scratch'
+    ? `on ${md.based_on.replace(/\.zip$/, '')}`
+    : 'from scratch';
+  return cell('model age', age === null ? '—' : dur(age),
+              `${md.name} · ${base}`);
+}
+
+// Countdown to the race stage.
+//
+// Handover needs BOTH conditions, so a single number would lie: it stops when
+// it has finished `target` times AND has then gone `patience` finishes without
+// a new best. Before the finish count is met, finishes are what is missing;
+// after it, the only thing left is the stall counter. So the cell shows
+// whichever gate is currently binding, and names it on the sub-line.
+function raceCountdown(ho) {
+  if (!ho || !ho.target) return '';
+  if (ho.done) return cell('race stage', '<span class="on">handing over</span>',
+                           `${ho.finishes} finishes`);
+  const left = ho.finishes_left ?? Math.max(0, ho.target - (ho.finishes || 0));
+  if (left > 0) {
+    return cell('race in', `${left} <span class="sub">fin</span>`,
+                `${ho.finishes || 0}/${ho.target} finishes`);
+  }
+  const stall = ho.stall_left ?? Math.max(0, ho.patience - (ho.since_best || 0));
+  return cell('race in', `<span class="warn">${stall} <span class="sub">no-PB</span></span>`,
+              `${ho.since_best || 0}/${ho.patience} since best`);
+}
+
+async function tick() {
+  try {
+    const [st, wy, ho, md, rs, ta] = await Promise.all([
+      fetch('/api/status',   {cache: 'no-store'}).then(r => r.json()),
+      // Ask for at least as many episodes as the window needs, or the
+      // rolling percentages quietly cover fewer episodes than the label
+      // claims. +5 so `win` is never limited by an off-by-one at the tail.
+      fetch(`/api/why?n=${WINDOW + 5}`, {cache: 'no-store'}).then(r => r.json()),
+      // Absent unless this is an explore stage with --handover; treated as
+      // "nothing to count down to" rather than an error.
+      fetch('/api/handover', {cache: 'no-store'}).then(r => r.json())
+        .catch(() => ({})),
+      fetch('/api/lineage',  {cache: 'no-store'}).then(r => r.json())
+        .catch(() => ({})),
+      fetch('/api/runstats', {cache: 'no-store'}).then(r => r.json())
+        .catch(() => ({})),
+      fetch('/api/train/args', {cache: 'no-store'}).then(r => r.json())
+        .catch(() => ({})),
+    ]);
+    const eps  = wy.entries || [];
+    const last = eps[eps.length - 1] || {};
+    const win  = eps.slice(-WINDOW);
+    const lg   = fromLog((st.trainer || {}).log);
+
+    const running = !!(st.trainer || {}).running;
+    const seats   = (st.seats || []);
+    const withCar = seats.filter(s => s.car).length;
+    const cpTot   = last.cp_total || st.cp_total || 5;
+    const bestCp  = win.length ? Math.max(...win.map(e => e.cp || 0)) : 0;
+    const hit1    = win.filter(e => (e.cp || 0) >= 1).length;
+    const fin     = win.filter(e => e.reason === 'FINISH').length;
+    const mapUid  = (st.landmarks || {}).map || (st.latest || {}).map;
+    const mapName = MAPS[mapUid] || (mapUid ? mapUid.slice(0, 10) + '…' : '-');
+    const stale   = (st.telemetry_age ?? 999) > 5;
+
+    // Best lap, in order of trustworthiness:
+    //   1. HandoverWatch's best_ms - written by the live trainer on every
+    //      finish, and the same number the handover decision uses.
+    //   2. a FINISH in the recent why entries.
+    //   3. the panel's captured stdout, which may belong to a dead run.
+    let bestLap = null;
+    if (ho && typeof ho.best_ms === 'number') bestLap = ho.best_ms / 1000;
+    if (bestLap === null) {
+      const t = eps.filter(e => e.reason === 'FINISH' && e.race_time)
+                   .map(e => e.race_time / 1000);
+      if (t.length) bestLap = Math.min(...t);
+    }
+    if (bestLap === null && rs && rs.best_ms) bestLap = rs.best_ms / 1000;
+    // lg.best comes from parsing the panel's captured stdout, which belongs to
+    // whatever run the PANEL launched - not necessarily the one driving now.
+    // Only fall back to it when /api/runstats has nothing to say at all (no
+    // episode count), so a live run with genuinely zero finishes shows "—"
+    // rather than a dead run's best lap.
+    if (bestLap === null && lg.best && !(rs && rs.episodes)) bestLap = lg.best;
+    // Finishes for the WHOLE run, not just the rolling window - a finish that
+    // scrolled out of the last 20 episodes still happened.
+    const totalFin = (ho && typeof ho.finishes === 'number') ? ho.finishes
+                   : (rs && typeof rs.finishes === 'number') ? rs.finishes : fin;
+
+    // who is driving: the scripted warm-up, or the learned policy. The trainer
+    // hands over from one to the other at learning_starts total steps.
+    const ls = ta && ta.args && +ta.args.learning_starts || 0;
+    const step = +last.step || 0;
+    const bootstrap = (ta && ta.args && ta.args.bootstrap) || 'pursuit';
+    let driverCell = '';
+    if (running && ls) {
+      if (step < ls) {
+        driverCell = cell('driving',
+          `<span class="warn">WARM-UP</span>`,
+          `scripted ${bootstrap} · ${k(step)}/${k(ls)} steps`);
+      } else {
+        driverCell = cell('driving',
+          `<span class="on">LEARNING</span>`,
+          `policy · warm-up ended at ${k(ls)}`);
+      }
+    }
+
+    const html = [
+      cell('training',
+           `<span class="dot" style="background:${running ? 'var(--good)' : 'var(--bad)'}"></span>${WHAT}`,
+           `${md.stage || lg.stage || '-'} stage · ${withCar}/4 seats` +
+           ((md.name || lg.name) ? ` · ${md.name || lg.name}` : ''), 'wide'),
+      driverCell,
+      cell('map', mapName, `${cpTot} checkpoints`),
+      modelAge(md),
+      cell('episodes', k(last.episode), `last ${win.length} eps`),
+      cell('steps', k(last.step), null),
+      cell('best lap', bestLap !== null ? bestLap.toFixed(2) + 's' : '—',
+           totalFin ? `${totalFin} finish${totalFin === 1 ? '' : 'es'} this run`
+                    : 'no finish yet'),
+      cell('best cp', `${bestCp}/${cpTot}`, `last ${win.length} eps`),
+      // One cell per checkpoint, CUMULATIVE: "cp3" is the share of episodes
+      // that got AT LEAST as far as checkpoint 3. Cumulative rather than
+      // per-checkpoint-exactly because that is the shape of the question you
+      // are actually asking - where does the run stop? - and it falls
+      // monotonically left to right, so the cliff edge is the wall the policy
+      // is hitting. A non-cumulative breakdown would put a big number on
+      // whichever CP happens to be the current failure point and read like
+      // success.
+      ...Array.from({length: cpTot}, (_, i) => {
+        const n   = i + 1;
+        const hit = win.filter(e => (e.cp || 0) >= n).length;
+        const pct = win.length ? Math.round(100 * hit / win.length) : 0;
+        const cls = !win.length ? '' : pct >= 80 ? 'on' : pct === 0 ? 'off' : 'warn';
+        // The percentage is over the RECENT window, which on its own reads as
+        // a flat contradiction once a milestone scrolls out of it: "CP5 0%"
+        // sitting beside "best lap 56.46s". The run total on the sub-line is
+        // what reconciles them, so a rare success stays visible instead of
+        // silently ageing out of the display.
+        const all = (rs && rs.reached) ? (rs.reached[n] || rs.reached[String(n)] || 0) : null;
+        const sub = all === null ? `${hit}/${win.length}`
+                                 : `${hit}/${win.length} · ${all} run`;
+        return cell(`cp${n}`, `<span class="${cls}">${pct}%</span>`, sub);
+      }),
+      cell('dist', Math.round(last.max_distance ?? last.distance ?? 0) + 'm',
+           `return ${Math.round(last['return'] ?? 0)}`),
+      raceCountdown(ho),
+      stale ? cell('telemetry', `<span class="off">stale</span>`,
+                   `${Math.round(st.telemetry_age)}s old`) : '',
+      '<div class="cell spacer"></div>',
+    ].join('');
+    document.getElementById('bar').innerHTML = html;
+  } catch (ex) {
+    document.getElementById('bar').innerHTML =
+      `<div class="cell"><span class="k">status</span>` +
+      `<span class="v off">panel unreachable</span></div>`;
+  }
+}
+tick();
+setInterval(tick, EVERY);
+</script>

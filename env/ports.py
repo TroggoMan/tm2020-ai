@@ -142,7 +142,7 @@ def _calibrated_pad_index(seat: int) -> int:
     return int(seat)
 
 
-def seat_ports(seat: int, game: int = 0) -> dict[str, int]:
+def seat_ports(seat: int, game: int = 0, raw: bool = False) -> dict[str, int]:
     """Ports for one splitscreen seat of one game.
 
     The seat has its own pad - the game tells seats apart by controller - but
@@ -153,7 +153,16 @@ def seat_ports(seat: int, game: int = 0) -> dict[str, int]:
     seat N - see _calibrated_pad_index.
     """
     game_ports = instance_ports(game)
-    idx = _calibrated_pad_index(seat)
+    # raw=True bypasses the calibration and returns the plain formula.
+    #
+    # tools/calibrate_seats.py MUST use it. It drives "pad N" and watches which
+    # car moves; if it asks this function for the pad while this function is
+    # already applying the last calibration, it measures through the
+    # correction, finds every seat driving its own car, and writes the
+    # IDENTITY - silently undoing the fix. That happened once: a crossed
+    # mapping was corrected, the tool was re-run to confirm it, and the confirm
+    # step reset it to crossed.
+    idx = int(seat) if raw else _calibrated_pad_index(seat)
     if game == 0:
         pad = PAD_BASE + INSTANCE_STRIDE * idx
     else:
@@ -164,5 +173,5 @@ def seat_ports(seat: int, game: int = 0) -> dict[str, int]:
             "broker": game_ports["broker"]}
 
 
-def seat_pad_addr(seat: int) -> tuple[str, int]:
-    return (HOST, seat_ports(seat)["pad"])
+def seat_pad_addr(seat: int, raw: bool = False) -> tuple[str, int]:
+    return (HOST, seat_ports(seat, raw=raw)["pad"])

@@ -65,25 +65,48 @@ class RegressionGuard(BaseCallback):
         self.best_mean: float | None = None
         self.bad = 0
         self.rollbacks = 0
-        self.last_gen = None
+        # env index -> that env's last seen cfg generation. NOT a single
+        # value: the counters are per-env and not comparable across seats.
+        self.last_gen: dict[int, int] = {}
         self.gen_changed_at = None
         self.ep = 0
 
     # -- reward-config changes -------------------------------------------
 
-    def _check_generation(self, info: dict) -> None:
+    def _check_generation(self, info: dict, env_i: int = 0) -> None:
+        """Notice a reward-config change, PER ENV.
+
+        `generation` is a counter inside each env's own LiveConfig, and every
+        seat worker has its own. So the numbers from different seats are not
+        comparable, and one shared `last_gen` across four of them flip-flops
+        forever: seat A reports 1, seat B reports 0, and each looks like a
+        change to the other.
+
+        That is not cosmetic. It spammed one line PER STEP - thousands of them
+        in the first 25 seconds of a run, drowning the log - and every one of
+        those false alarms set `gen_changed_at = now`, which permanently
+        suppressed the regression detector's own "is this run getting worse?"
+        rule (it stays quiet for a while after a genuine config change, on the
+        grounds that the buffer is briefly inconsistent). So the auto-rollback
+        safety net was silently disabled for the whole run.
+
+        Keyed by env index, the comparison is finally like-for-like.
+        """
         gen = info.get("cfg_gen")
-        if gen is None or gen == self.last_gen:
+        if gen is None:
             return
-        if self.last_gen is not None:
+        prev = self.last_gen.get(env_i)
+        if gen == prev:
+            return
+        if prev is not None:
             self.gen_changed_at = self.num_timesteps
             size = getattr(self.model, "replay_buffer", None)
             n = size.size() if size is not None else 0
-            print(f"  reward config changed (gen {self.last_gen} -> {gen}). "
-                  f"{n:,} transitions in the buffer were scored under the OLD "
-                  f"reward and are not relabelled - expect a wobble while they "
-                  f"age out.", flush=True)
-        self.last_gen = gen
+            print(f"  reward config changed on seat {env_i} "
+                  f"(gen {prev} -> {gen}). {n:,} transitions in the buffer "
+                  f"were scored under the OLD reward and are not relabelled - "
+                  f"expect a wobble while they age out.", flush=True)
+        self.last_gen[env_i] = gen
 
     # -- entropy, so a deliberate exploration burst is not misread --------
 
@@ -122,10 +145,10 @@ class RegressionGuard(BaseCallback):
         dones = self.locals.get("dones")
         infos = [] if infos is None else infos
         dones = [] if dones is None else dones
-        for info, done in zip(infos, dones):
+        for env_i, (info, done) in enumerate(zip(infos, dones)):
             if not info:
                 continue
-            self._check_generation(info)
+            self._check_generation(info, env_i)
             if not done:
                 continue
             self.ep += 1

@@ -292,3 +292,31 @@ four pads at once. Check `pgrep -af train_sac.py` before trusting it.
 One dominant wedge point: 12 of 45 recent episodes ended inside a 20 m box at
 **(1180, 18.0, 806)**, arc ~215-224, coming south down the hairpin and running
 out of road ~42 m short of CP1 in x. Gate 0 is at arc 232 of 1836.
+
+## Scaffolding on Summer 2026-06 that must be REMOVED (2026-08-31)
+
+Three per-track reward aids exist only to get the policy across the 194m
+unbarriered platform run between CP4 and CP5 (line 1356m -> 1549m). None of
+them belongs in a general driver, and all three live in
+`configs/mIAmhaktmdIeoA9nVTQarm8Ck91.explore.json`, never in
+`env/config.py` DEFAULTS:
+
+* `reward.w_platform: 1.0` - doubles pay-per-metre on unbarriered sections.
+  Side effect: halves the relative weight of `step_cost` there, so the car
+  crosses slowly and wanders. Observed doing exactly that.
+* `markers: [1400m +150, 1460m +200, 1520m +250]` - one-off bonuses inside the
+  gap, to shorten how far the critic must carry CP5's value backwards.
+* `surfaces._non_road: -0.5` (and Grass/Water/DirtRoad at -0.5) - keep this
+  one; it is the general "no progress on sand/water" rule and is sized to
+  cancel progress (~+1/step), not to dominate.
+
+REMOVAL TRIGGER: once CP5 is reached reliably (say >30% of CP4 episodes),
+drop `w_platform` to 0 first - it is the one distorting driving style - then
+clear the markers with `tools/set_marker.py --clear`. Re-check that CP5
+conversion holds without them; if it collapses, the policy learned the
+scaffold rather than the crossing.
+
+WHY THE SCAFFOLD WAS NEEDED: with the earlier -5/wheel off-road penalty,
+stopping at the platform entrance cost -20 while attempting and falling cost
+up to -940, so giving up was 47x cheaper and the policy learned it within an
+hour. The penalty was resized before the scaffold was added.

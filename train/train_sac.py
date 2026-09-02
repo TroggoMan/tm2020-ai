@@ -103,6 +103,42 @@ def write_meta(path: str, env, args, grad: int) -> None:
             "cp_mode": cfg.get("line", "cp_mode", "gate"),
             "par_speed": cfg.get("reward", "par_speed", 0.0),
             "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+    # --- lineage and age -------------------------------------------------
+    #
+    # "How old is this AI, and what is it based on?" could not be answered
+    # from anything on disk. `saved` is only ever the LAST write, so a model
+    # carried through five resumes looked newly born every time, and nothing
+    # recorded which checkpoint a run was warm-started from. That is how a
+    # whole afternoon went into a policy whose provenance turned out to be a
+    # 14k-step checkpoint rather than the one that set the best lap.
+    #
+    # `born` and `trained_s` are INHERITED from whatever this run started
+    # from, so they measure the age of the LINEAGE rather than of the file.
+    # A fresh run starts both at zero, which is what makes "from scratch"
+    # visible rather than something you have to remember.
+    prev = {}
+    src = getattr(args, "init_from", None)
+    for cand in (path + ".meta.json",
+                 (os.path.splitext(src)[0] + ".meta.json") if src else None):
+        if cand and os.path.isfile(cand):
+            try:
+                with open(cand) as f:
+                    prev = json.load(f)
+                break
+            except (OSError, ValueError):
+                pass
+    now = time.time()
+    started = getattr(args, "_run_started", None) or now
+    data["born"] = prev.get("born") or time.strftime("%Y-%m-%d %H:%M:%S")
+    data["based_on"] = (os.path.basename(src) if src else
+                        prev.get("based_on") or "scratch")
+    data["ancestry"] = (prev.get("ancestry") or []) + (
+        [os.path.basename(src)] if src else [])
+    # Cumulative training seconds across the whole lineage, not this process.
+    data["trained_s"] = round(float(prev.get("trained_s") or 0.0)
+                              + max(0.0, now - started), 1)
+    data["bootstrap"] = getattr(args, "bootstrap", None)
     try:
         with open(path + ".meta.json", "w") as f:
             json.dump(data, f, indent=2)
@@ -203,6 +239,51 @@ def auto_gradient_steps(instances: int, control_hz: float) -> int:
               f"{1000/control_hz:.0f}ms control period - using {fits}. "
               f"Overruns show as 'slip=' in the episode log.", flush=True)
     return min(want, fits)
+
+
+def calibrate_seats_or_die(args) -> None:
+    """Measure which pad drives which seat, EVERY run, before anything trains.
+
+    The game binds seats to controllers in whatever order it enumerated them,
+    and that order changes whenever the game, the lobby or the pad servers are
+    rebuilt. Measured on one machine across a single afternoon it was
+    identity, then {0:2, 1:3, 2:0, 3:1}, then a lobby where two pads drove the
+    same car - so a mapping measured earlier is not evidence about now.
+
+    Getting it wrong is not a degradation, it is silent nonsense: a policy
+    steers a car it cannot see while observing a car it cannot steer, every
+    episode on those seats ends 'stuck', and because they fail fast they
+    produce most of the episodes in the buffer. It cost a full day of training
+    that looked like a bad policy and was a wiring fault.
+
+    So this refuses to start rather than warn. An unbound seat or two pads on
+    one car is a lobby that has to be fixed in the game, and no amount of
+    training will compensate.
+    """
+    if args.seats <= 1 or getattr(args, "skip_calibration", False):
+        return
+    tool = os.path.join(ROOT, "tools", "calibrate_seats.py")
+    if not os.path.isfile(tool):
+        print("  no calibrate_seats.py - skipping seat calibration", flush=True)
+        return
+    print(f"calibrating {args.seats} seats (which pad drives which car)…",
+          flush=True)
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable, tool, "--seats", str(args.seats)],
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("seat calibration timed out - is the map loaded with "
+                         "all cars at the start line?")
+    out = (r.stdout or "") + (r.stderr or "")
+    for line in out.strip().splitlines():
+        print("  " + line, flush=True)
+    if r.returncode != 0:
+        raise SystemExit(
+            "\nRefusing to train on a broken seat mapping. Fix the lobby in "
+            "the game (every seat needs its OWN controller), then start again."
+            "\nPass --skip-calibration only if you are certain the saved "
+            "mapping is still correct.")
 
 
 def env_layout(seats: int, instances: int) -> list:
@@ -344,7 +425,9 @@ class EpisodeLog(BaseCallback):
             # so the transitions are not the 25ms ones the model thinks they
             # are. Silence here is what "it got slower and nobody noticed"
             # looks like.
-            over = info.get("overruns", 0)
+            # Per-episode, not the run total: the cumulative counter divided
+            # by one episode's steps reads as a rate many times the real one.
+            over = info.get("overruns_ep", info.get("overruns", 0))
             slip = f"  slip={over}" if over else ""
             print(f"ep {self.ep:5d}  {inst}step {steps:7d}  "
                   f"{reason:8s}  t={(rt or 0)/1000:6.2f}s  "
@@ -518,6 +601,30 @@ def main():
                          "episode 150, not before")
     ap.add_argument("--no-replay-capture", action="store_true",
                     help="do not copy the game's autosaved PB replays into runs/")
+    ap.add_argument("--curriculum", action="store_true",
+                    help="train one SECTOR at a time (start->CP1, CP1->CP2, "
+                         "...), then the whole lap, then repeat. Episodes end "
+                         "at the target sector's exit gate, which is cheaper "
+                         "than a lap for every sector but the last.")
+    ap.add_argument("--curriculum-improvements", type=int, default=25,
+                    help="new sector bests before moving to the next sector")
+    ap.add_argument("--curriculum-patience", type=int, default=100,
+                    help="episodes with no improvement before moving on "
+                         "anyway. NOT optional: improvements get harder, so "
+                         "an improvement count alone stalls forever.")
+    ap.add_argument("--curriculum-max-episodes", type=int, default=100,
+                    help="hard cap on episodes per sector, whatever else "
+                         "happens. Every improvement resets the patience "
+                         "counter, so without this a sector that keeps "
+                         "yielding small gains never advances.")
+    ap.add_argument("--curriculum-no-full-lap", action="store_true",
+                    help="skip the whole-track phase at the end of each cycle")
+    ap.add_argument("--skip-calibration", action="store_true",
+                    help="do NOT re-measure which pad drives which seat. The "
+                         "mapping changes whenever the game, lobby or pad "
+                         "servers are rebuilt, and a stale one silently "
+                         "trains four policies on the wrong cars - only pass "
+                         "this if you have just measured it yourself.")
     ap.add_argument("--resume", action="store_true")
     # v2 observation (90 dims, with surfaces and effects) is not loadable by a
     # v1 model, so it gets its own name rather than a confusing shape error.
@@ -567,6 +674,7 @@ def main():
     # instances at 1 - the extra games are for the racer - unless you really
     # asked for more games during explore.
     layout_instances = args.instances
+    calibrate_seats_or_die(args)
     LAYOUT = env_layout(args.seats, layout_instances)
 
     def factory(k: int):
@@ -751,6 +859,38 @@ def main():
                               f"{h.speed_from_kmh:.0f}-{h.speed_to_kmh:.0f}km/h)"
                               for h in model.hints), flush=True)
 
+    # When this PROCESS began driving, so write_meta can add its wall-clock to
+    # the lineage's cumulative total. Set once, here, rather than at import:
+    # the model and env construction above can take a minute and that is setup,
+    # not training.
+    args._run_started = time.time()
+
+    # Publish the model's IDENTITY for the panel and the stream overlays:
+    # which model is driving, when its lineage began, and what it was warm
+    # started from. Written once at startup rather than only on save, because
+    # a viewer asking "how old is this AI" should not have to wait for the
+    # next checkpoint - and `born` is a fixed timestamp, so the age ticks up
+    # on its own without this file being rewritten.
+    try:
+        _meta = write_meta(path, env, args, grad)
+        _meta["name"] = os.path.basename(path)
+        _meta["pid"] = os.getpid()
+        with open(os.path.join(ROOT, "logs", "model.json"), "w") as _f:
+            json.dump(_meta, _f)
+    except Exception as _ex:
+        print(f"  (could not publish model identity: {_ex})", flush=True)
+
+    # Clear last run's handover countdown unless THIS run has one. HandoverWatch
+    # rewrites logs/handover.json continuously when --handover is set; when it
+    # is not, nothing touches the file, so the stream overlay kept reading a
+    # previous run's "handing over / 59 finishes / best lap 56.83s" over a
+    # completely different model. Stale-by-omission, so delete it here.
+    if not (args.stage == "explore" and args.handover):
+        try:
+            os.remove(os.path.join(ROOT, "logs", "handover.json"))
+        except OSError:
+            pass
+
     # Ctrl-C (what the web panel's Stop sends) should save, not discard.
     def save_and_exit(signum, frame):
         print("\nstopping - saving model and replay buffer", flush=True)
@@ -760,8 +900,29 @@ def main():
             model.save_replay_buffer(path + "_buffer")
         except Exception as ex:
             print("could not save replay buffer:", ex, flush=True)
-        env.close()
-        sys.exit(0)
+        # env.close() on a SubprocVecEnv waits on four worker pipes, and a
+        # worker blocked in a telemetry read does not answer - so this hung,
+        # sys.exit(0) was never reached, and the process stayed alive AFTER
+        # reporting "stopping - saving model and replay buffer". That is why a
+        # SIGTERM looked like it had worked while the trainer kept driving, and
+        # how two trainers ended up on the same four pads.
+        #
+        # The model and buffer are already on disk by here, so nothing is lost
+        # by refusing to wait. os._exit skips interpreter cleanup entirely and
+        # cannot block; the workers are orphaned and reaped, and their sockets
+        # close with the process.
+        try:
+            import threading
+            t = threading.Thread(target=env.close, daemon=True)
+            t.start()
+            t.join(timeout=10.0)
+            if t.is_alive():
+                print("  env.close() did not finish in 10s - exiting anyway",
+                      flush=True)
+        except Exception as ex:                            # noqa: BLE001
+            print(f"  env.close() failed ({ex}) - exiting anyway", flush=True)
+        sys.stdout.flush()
+        os._exit(0)
 
     # A background job started from a non-interactive shell inherits SIGINT
     # ignored, so the panel's Stop must be catchable as SIGTERM too.
@@ -815,6 +976,18 @@ def main():
         callbacks.append(RegressionGuard(
             window=args.regress_window, drop=args.regress_drop,
             rollback_to=(path + "_best") if args.auto_rollback else None))
+    if getattr(args, "curriculum", False):
+        from train.curriculum import SectorCurriculum
+        # Gate count is left to the callback: it is not an env attribute (it is
+        # computed per step as len(self.gates)) and it is not known until the
+        # MAP loads, which is after the envs exist. Asking here got a guess.
+        callbacks.append(SectorCurriculum(
+            n_gates=None,
+            improvements=args.curriculum_improvements,
+            patience=args.curriculum_patience,
+            max_episodes=args.curriculum_max_episodes,
+            full_lap=not args.curriculum_no_full_lap))
+
     if handover is not None:
         callbacks.append(handover)
         print(f"handover: will stop after {args.handover} finish(es) with no "
@@ -926,6 +1099,17 @@ def do_handover(args, watch) -> int:
             "--instances", str(race_instances),
             "--init-from", explore_model,
             "--promote-to", driver]
+    # Carry sector curriculum through: if the explore run drilled start->CP1,
+    # CP1->CP2, ... then the racer should too, now that the route is known.
+    # The --curriculum-* tuning carries with it so the handover does not
+    # silently reset it to defaults.
+    if getattr(args, "curriculum", False):
+        argv += ["--curriculum",
+                 "--curriculum-improvements", str(args.curriculum_improvements),
+                 "--curriculum-patience", str(args.curriculum_patience),
+                 "--curriculum-max-episodes", str(args.curriculum_max_episodes)]
+        if getattr(args, "curriculum_no_full_lap", False):
+            argv += ["--curriculum-no-full-lap"]
     print(f"\nhandover: starting the race stage\n  "
           + " ".join(argv[1:]) + "\n", flush=True)
     os.execv(sys.executable, argv)
