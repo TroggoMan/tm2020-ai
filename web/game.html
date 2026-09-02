@@ -1,0 +1,125 @@
+<!-- Self-healing game view for an OBS browser source.
+     Served at /game. Point OBS here INSTEAD of at /grid/mjpeg directly.
+
+     WHY THIS EXISTS: an MJPEG stream is one long-lived HTTP response. When the
+     ffmpeg behind it dies or stalls, the socket often stays open with no
+     further parts arriving, so the browser neither errors nor repaints - it
+     just holds the last frame forever. OBS shows a frozen game and the only
+     cure is a manual "Refresh" on the source.
+
+     Nothing in the <img> tells us that happened, so this page watches the
+     PIXELS instead, and reloads the stream when they stop changing.
+
+     The false-positive risk is a genuinely static scene (sitting on a menu),
+     which is why the watchdog also asks the panel whether telemetry is live.
+     Frozen pixels while cars are demonstrably driving is a stall; frozen
+     pixels with stale telemetry is just a paused game, and is left alone. -->
+<meta charset="utf-8">
+<title>Game View</title>
+<style>
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  /* Fill the source exactly. OBS sizes the browser to the source dimensions,
+     so object-fit keeps the aspect without letterboxing inside the page. */
+  #v { display: block; width: 100vw; height: 100vh; object-fit: contain; }
+  /* Deliberately tiny and dim: this is on a live stream, so a reconnect
+     should be visible to the operator without being a graphic. */
+  #s { position: fixed; left: 6px; bottom: 4px; font: 11px ui-monospace,
+       monospace; color: rgba(255,255,255,.45); text-shadow: 0 1px 2px #000;
+       pointer-events: none; }
+</style>
+
+<img id="v" alt="">
+<div id="s"></div>
+
+<script>
+const Q = new URLSearchParams(location.search);
+const DISPLAY = Q.get('display') || ':99';
+const W       = Q.get('w')   || '1920';
+// Defaults measured on this machine (1920 capture of :99):
+//   fps=30 q=2 -> 69% of a CPU core, 16.9 MB/s
+//   fps=20 q=5 -> 36% of a core,      5.9 MB/s   <- these
+// The control loop runs on the same CPU, and the expensive setting
+// pushed control-step overruns from 1.4% to 8.6%. Half a core is not
+// worth a quality difference you cannot see at 1920.
+const FPS     = Q.get('fps') || '20';
+const QUAL    = Q.get('q')   || '5';
+const CROP    = Q.get('crop');
+// How long the picture may sit perfectly still, while telemetry says the game
+// is live, before we call it a stall. Long enough not to trip on a car parked
+// against a wall mid-episode; short enough that a stream recovers on its own.
+const STALL_S = Math.max(4, +(Q.get('stall') || 12));
+const POLL_MS = 2000;
+
+const img = document.getElementById('v');
+const note = document.getElementById('s');
+
+function url() {
+  const p = new URLSearchParams({display: DISPLAY, w: W, fps: FPS, q: QUAL});
+  if (CROP) p.set('crop', CROP);
+  // Cache-buster: without a unique URL the browser may attach to its existing
+  // (dead) connection instead of opening a new one, which is the whole bug.
+  p.set('_', Date.now());
+  return '/grid/mjpeg?' + p.toString();
+}
+
+let reloads = 0, lastChange = Date.now(), sig = null, busy = false;
+
+function reload(why) {
+  reloads++;
+  lastChange = Date.now();
+  sig = null;
+  note.textContent = `reconnecting (${why}) ×${reloads}`;
+  img.src = url();
+  setTimeout(() => { if (note.textContent.startsWith('reconnect')) note.textContent = ''; }, 4000);
+}
+
+// A cheap fingerprint of the current frame: a sparse grid of pixels, summed.
+// Full-frame hashing 30 times a second would cost more than the decode.
+const cv = document.createElement('canvas');
+const cx = cv.getContext('2d', {willReadFrequently: true});
+function fingerprint() {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return null;
+  cv.width = 64; cv.height = 36;
+  try {
+    cx.drawImage(img, 0, 0, 64, 36);
+    const d = cx.getImageData(0, 0, 64, 36).data;
+    let a = 0, b = 0;
+    for (let i = 0; i < d.length; i += 16) { a = (a + d[i]) >>> 0; b = (b ^ (d[i] << (i % 24))) >>> 0; }
+    return a + ':' + b;
+  } catch (e) {
+    // Tainted canvas would mean a cross-origin stream; same-origin here, but
+    // never let the watchdog itself throw and stop watching.
+    return null;
+  }
+}
+
+async function live() {
+  try {
+    const r = await fetch('/api/status', {cache: 'no-store'});
+    const d = await r.json();
+    return (d.telemetry_age ?? 999) < 5;
+  } catch (e) { return false; }
+}
+
+async function watch() {
+  if (busy) return;
+  busy = true;
+  try {
+    const f = fingerprint();
+    if (f === null) {                      // not decoding at all yet
+      if (Date.now() - lastChange > STALL_S * 1000) reload('no frame');
+      return;
+    }
+    if (f !== sig) { sig = f; lastChange = Date.now(); return; }
+    if (Date.now() - lastChange < STALL_S * 1000) return;
+    // Pixels frozen. Only a stall if the game is actually running.
+    if (await live()) reload('frozen');
+    else lastChange = Date.now();          // paused/menu - not our problem
+  } finally { busy = false; }
+}
+
+img.addEventListener('error', () => reload('error'));
+img.src = url();
+setInterval(watch, POLL_MS);
+</script>

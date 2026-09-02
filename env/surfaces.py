@@ -137,6 +137,28 @@ BORDER_IDS = frozenset(
     i for i, name in enumerate(MATERIALS) if name in BORDER_MATERIALS)
 
 
+#: A wheel that is OFF THE GROUND reports the enum's "nothing" entry. It is
+#: not a surface, and must never be scored as one - penalising it would tax
+#: every jump on the track.
+AIRBORNE = "XXX_Null"
+
+
+def is_road_name(name: str) -> bool:
+    """Is this material one the car is MEANT to drive on?
+
+    By grip group, not by an enumerated list: the point is that anything not
+    road-like is off-track, and enumerating penalties material by material
+    means every surface nobody thought of (Sand, Gravel, Rock, Snow, Wheat,
+    Green...) is silently free.
+
+    Airborne reads True - "not a surface to be penalised" - because being in
+    the air is legitimate and is scored, if at all, by its own term.
+    """
+    if not name or name == AIRBORNE:
+        return True
+    return GROUPS.get(name, "other") == "road"
+
+
 def is_border(mat_id) -> bool:
     """Is this wheel on a track border (kerb) rather than a driving surface?"""
     try:

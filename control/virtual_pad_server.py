@@ -28,6 +28,11 @@ AXIS_MIN, AXIS_MAX = -32768, 32767
 TRIG_MIN, TRIG_MAX = 0, 255
 
 BUTTONS = {
+    # DO NOT "correct" this to X=WEST / Y=NORTH on the grounds that Y is the
+    # top button on an Xbox pad. It is, physically - but the kernel's legacy
+    # aliases are BTN_NORTH == BTN_X and BTN_WEST == BTN_Y, and TM2020 reads
+    # BTN_WEST as the button it prompts as "Y". Measured 2026-08-31: with the
+    # "corrected" map, pressing "y" did nothing and "x" fired the respawn.
     "a": e.BTN_SOUTH, "b": e.BTN_EAST, "x": e.BTN_NORTH, "y": e.BTN_WEST,
     "lb": e.BTN_TL, "rb": e.BTN_TR,
     "select": e.BTN_SELECT, "start": e.BTN_START,

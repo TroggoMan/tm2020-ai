@@ -136,11 +136,48 @@ def x_displays(games_only: bool = True) -> list[dict]:
     return out
 
 
-def mjpeg_ffmpeg(display: str, fps: int, width: int):
-    """ffmpeg grabbing one X display as an MJPEG multipart stream on stdout."""
-    return [FFMPEG, "-hide_banner", "-loglevel", "error",
-            "-f", "x11grab", "-framerate", str(fps), "-i", display,
-            "-vf", f"scale={width}:-2", "-q:v", "7",
+def mjpeg_ffmpeg(display: str, fps: int, width: int, q: int = 7,
+                 crop: str | None = None):
+    """ffmpeg grabbing one X display as an MJPEG multipart stream on stdout.
+
+    The defaults (960 wide, 12fps, q7) are sized for the GRID's small
+    thumbnails, where a dozen streams share one browser tab. They look bad
+    blown back up to full size in OBS, which is what a stream does - so w, fps
+    and q are all query params. For a broadcast source use
+
+        /grid/mjpeg?display=:99&w=1920&fps=30&q=2
+
+    `crop` takes W:H:X:Y and is applied BEFORE the scale, so it selects a
+    region of the display rather than of the output. It is how a square view
+    is cut out of a 16:9 display without touching the game:
+
+        /grid/mjpeg?display=:99&crop=1080:1080:420:0&w=1080&fps=30&q=2
+
+    Cropping in ffmpeg beats cropping in OBS because what travels over the
+    socket is only the region you keep - the discarded pixels are never
+    encoded. It does NOT change what the game renders, so it trims field of
+    view; to get a genuinely square RENDER, restart the game square
+    (GAME_W=GAME_H in tools/headless-main.sh) and leave crop off.
+
+    scale=-2 keeps the aspect and rounds to an even height, which mpjpeg needs.
+    q is ffmpeg's mjpeg quantiser: 2 is near-lossless, 31 is awful. It costs
+    bandwidth, but this only ever travels over loopback.
+    """
+    vf = f"crop={crop},scale={width}:-2" if crop else f"scale={width}:-2"
+    # nice +10: this is a NICE-TO-HAVE next to the training control loop, which
+    # has a hard 50ms budget per step and no way to catch up if it misses one.
+    # The capture stalling for a few milliseconds costs nobody anything; the
+    # control loop overrunning records a transition whose dt is a lie.
+    return ["nice", "-n", "10", FFMPEG, "-hide_banner", "-loglevel", "error",
+            # -draw_mouse 0: leave the pointer OUT of the capture. On a
+            # headless display the pointer just parks wherever the last click
+            # left it - usually dead centre of the game view - and there is no
+            # user moving it away. Hiding it here rather than warping it to a
+            # corner keeps it fully usable over VNC, where you still need it to
+            # click through menus and build the splitscreen lobby.
+            "-f", "x11grab", "-draw_mouse", "0",
+            "-framerate", str(fps), "-i", display,
+            "-vf", vf, "-q:v", str(q),
             "-f", "mpjpeg", "-"]
 
 
@@ -515,9 +552,23 @@ CONFIG_DIR = os.path.join(ROOT, "configs")
 
 
 def list_configs() -> list[str]:
+    """Map identifiers, each listed ONCE. A trailing .explore / .race is a
+    PROFILE, picked by the stage dropdown - not part of the map id. Listing
+    `<uid>.explore` as its own selectable map is what let a save land in
+    `<uid>.explore.explore.json`."""
     if not os.path.isdir(CONFIG_DIR):
         return []
-    return sorted(f[:-5] for f in os.listdir(CONFIG_DIR) if f.endswith(".json"))
+    out = set()
+    for f in os.listdir(CONFIG_DIR):
+        if not f.endswith(".json"):
+            continue
+        base = f[:-5]
+        for suf in (".explore", ".race"):
+            if base.endswith(suf):
+                base = base[:-len(suf)]
+                break
+        out.add(base)
+    return sorted(out)
 
 
 def active_profile() -> str:
@@ -562,9 +613,20 @@ def write_config(uid: str, data: dict) -> dict:
     half-written read would be a parse error mid-run."""
     if not uid or os.sep in uid or uid in (".", ".."):
         return {"ok": False, "err": "bad map id"}
-    merged = tuning.deep_merge(tuning.DEFAULTS, data)
     os.makedirs(CONFIG_DIR, exist_ok=True)
     path = os.path.join(CONFIG_DIR, f"{uid}.json")
+    # DEFAULTS < the file already on disk < the incoming edits. Merging over
+    # the EXISTING file (not just DEFAULTS) is what stops a partial save from
+    # blanking keys the caller did not send - `markers`, `marks`, `hints`,
+    # `route_edits` all have their own editors and must survive a plain
+    # tuning save.
+    try:
+        with open(path) as _ef:
+            existing = json.load(_ef)
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    merged = tuning.deep_merge(
+        tuning.deep_merge(tuning.DEFAULTS, existing), data)
     tmp = path + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -614,6 +676,105 @@ def _load_route_edits(uid: str) -> list:
     return [p for p in out if p["points"]]
 
 
+def _dekink(pts: list, zi: int = 1, cos_thresh: float = -0.25, passes: int = 5):
+    """Drop points where the line folds back on itself - a splice artefact of
+    patches whose ends do not line up. Mirrors env.routemodel._dekink so the
+    panel draws the same line the trainer uses. zi is the index of the second
+    horizontal axis (1 for [x,z], 2 for [x,y,z]). Pure stdlib."""
+    for _ in range(passes):
+        if len(pts) < 4:
+            break
+        keep = [pts[0]]
+        dropped = 0
+        for i in range(1, len(pts) - 1):
+            p0, p1, p2 = keep[-1], pts[i], pts[i + 1]
+            ax, az = p1[0] - p0[0], p1[zi] - p0[zi]
+            bx, bz = p2[0] - p1[0], p2[zi] - p1[zi]
+            na = (ax * ax + az * az) ** 0.5
+            nb = (bx * bx + bz * bz) ** 0.5
+            if na > 1e-6 and nb > 1e-6 and \
+                    (ax * bx + az * bz) / (na * nb) < cos_thresh:
+                dropped += 1
+                continue
+            keep.append(p1)
+        keep.append(pts[-1])
+        pts = keep
+        if not dropped:
+            break
+    return pts
+
+
+_DECK_COLS: dict = {}      # uid -> {(cx,cz): [world_y deck floors]}, cached
+
+
+def _snap_line_to_deck(uid: str, pts: list) -> list:
+    """Pull each [x,y,z] point's Y onto the real road deck from the occupancy
+    grid, so the panel draws (and measures markers on) the same line the
+    trainer uses. Mirrors env.routemodel._snap_to_deck. Pure stdlib."""
+    if not pts:
+        return pts
+    cols = _DECK_COLS.get(uid)
+    if cols is None:
+        cols = {}
+        try:
+            with open(os.path.join(ROOT, "maps", f"{uid}.json")) as f:
+                g = json.load(f)
+            a = g.get("cells") or []
+            by = (g.get("block_size") or [32, 8, 32])[1]
+            bh = g.get("base_height", 8)
+            for i in range(0, len(a) - 2, 3):
+                cx, cy, cz = a[i], a[i + 1], a[i + 2]
+                wy = (cy - bh) * by
+                if wy > 4.0:
+                    cols.setdefault((cx, cz), []).append(wy + 2.0)
+            for k in cols:
+                cols[k].sort()
+        except (OSError, ValueError, KeyError, TypeError):
+            cols = {}
+        _DECK_COLS[uid] = cols
+    if not cols:
+        return pts
+    try:
+        with open(os.path.join(ROOT, "maps", f"{uid}.json")) as f:
+            g = json.load(f)
+        bx, _, bz = g.get("block_size") or [32, 8, 32]
+    except (OSError, ValueError):
+        bx, bz = 32, 32
+
+    def cell(p):
+        return (int(p[0] // bx), int(p[2] // bz))
+
+    ys = [p[1] for p in pts]
+    snapped = [None] * len(pts)
+    prev = None
+    for i, p in enumerate(pts):
+        decks = cols.get(cell(p))
+        if not decks:
+            continue
+        best = min(decks, key=lambda d: abs(d - ys[i]))
+        if prev is not None and abs(best - prev) > 30.0:
+            near = [d for d in decks if abs(d - prev) <= 30.0]
+            if near:
+                best = min(near, key=lambda d: abs(d - ys[i]))
+        snapped[i] = best
+        prev = best
+    have = [i for i, v in enumerate(snapped) if v is not None]
+    if len(have) < 2:
+        return pts
+    out = [list(p) for p in pts]
+    for i in range(len(out)):
+        if snapped[i] is not None:
+            out[i][1] = snapped[i]
+        elif i < have[0] or i > have[-1]:
+            out[i][1] = ys[i]
+        else:
+            lo = max(h for h in have if h <= i)
+            hi = min(h for h in have if h >= i)
+            t = 0 if hi == lo else (i - lo) / (hi - lo)
+            out[i][1] = snapped[lo] + (snapped[hi] - snapped[lo]) * t
+    return out
+
+
 def _splice_patches(pts: list, patches: list):
     """pts: [[x,z],...]. Replace the span between each patch's two anchors (the
     nearest line points) with its polyline. Pure stdlib - the panel has no
@@ -635,7 +796,69 @@ def _splice_patches(pts: list, patches: list):
         pts = pts[:lo + 1] + [list(q) for q in seg] + pts[hi:]
         if pat["kind"] == "jump" and seg:
             jumps.append([seg[0][0], seg[0][1], seg[-1][0], seg[-1][1]])
-    return pts, jumps
+    return _dekink(pts, zi=1), jumps
+
+
+def spliced_line_3d(uid: str):
+    """The 3D line the TRAINER will use, and its cumulative distance.
+
+    Markers are stored as a distance, and the reward compares that against
+    progress along the line AFTER route edits are spliced in. So the distance
+    has to be measured on the SPLICED geometry: a hand-drawn straight line
+    across a section is shorter than the wander it replaces, so measuring on
+    the raw roadtrace puts every marker past that point in the wrong place.
+
+    Mirrors env.routemodel._apply_patches exactly, including lerping y between
+    the two anchor points - the patch itself is 2D (drawn top-down), so any
+    other choice of height would disagree with the trainer's 3D distance.
+    Pure stdlib; the panel has no numpy.
+
+    Returns (points3, cumulative) or (None, None).
+    """
+    try:
+        with open(os.path.join(ROOT, "maps", f"{uid}.roadtrace.json")) as fh:
+            pts = [list(p[:3]) for p in (json.load(fh).get("points") or [])]
+    except (OSError, ValueError, TypeError, IndexError):
+        return None, None
+    if not pts:
+        return None, None
+
+    def nearest_xz(p):
+        bi, bd = 0, None
+        for i, q in enumerate(pts):
+            d = (q[0] - p[0]) ** 2 + (q[2] - p[1]) ** 2
+            if bd is None or d < bd:
+                bd, bi = d, i
+        return bi
+
+    for pat in _load_route_edits(uid):
+        try:
+            ia, ib = nearest_xz(pat["a"]), nearest_xz(pat["b"])
+        except (KeyError, TypeError, IndexError):
+            continue
+        lo, hi = sorted((ia, ib))
+        pp = pat.get("points") or []
+        if ia > ib:
+            pp = pp[::-1]
+        if not pp:
+            continue
+        y0, y1 = pts[lo][1], pts[hi][1]
+        m = len(pp)
+        seg = []
+        for k, q in enumerate(pp):
+            t = k / max(m - 1, 1)
+            seg.append([float(q[0]), y0 + (y1 - y0) * t, float(q[1])])
+        pts = pts[:lo + 1] + seg + pts[hi:]
+
+    pts = _dekink(pts, zi=2)     # same fold-removal the trainer applies
+    pts = _snap_line_to_deck(uid, pts)   # ride the real road deck (see env.routemodel)
+
+    cum = [0.0]
+    for i in range(1, len(pts)):
+        a, b = pts[i - 1], pts[i]
+        dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        cum.append(cum[-1] + (dx * dx + dy * dy + dz * dz) ** 0.5)
+    return pts, cum
 
 
 def route_payload(uid: str) -> dict:
@@ -711,6 +934,135 @@ def route_payload(uid: str) -> dict:
     out["points"] = pts
     out["half_width"] = hw[:len(pts)] if hw else []
     out["source"] = src if pts else "none"
+
+    # Reward markers, converted from "distance along the line" to map XZ so the
+    # panel can draw them. They are stored as a distance because that is what
+    # the reward compares against (max_s), but a distance is not something you
+    # can see on a map - which is the whole reason for showing them here.
+    #
+    # Measured along the SPLICED points, i.e. the same geometry the panel is
+    # about to draw, so a marker never appears off the line it belongs to.
+    out["markers"] = []
+    # Named marks (mark_from / mark_to for hints) - display only. Stored as a
+    # world [x,y,z], so no line projection needed, just drop the Y.
+    out["marks"] = []
+    _cfg = {}
+    for _p in (config_name(uid, active_profile()) + ".json",
+               f"{uid}.explore.json", f"{uid}.json"):
+        try:
+            with open(os.path.join(ROOT, "configs", _p)) as fh:
+                _cfg = json.load(fh)
+            break
+        except (OSError, ValueError):
+            continue
+    marks = (_cfg.get("markers") or [])
+    for nm, p in (_cfg.get("marks") or {}).items():
+        try:
+            out["marks"].append({"name": nm,
+                                 "xz": [round(float(p[0]), 1),
+                                        round(float(p[2]), 1)]})
+        except (TypeError, ValueError, IndexError):
+            pass
+    if marks and pts:
+        # Distance must be measured the way the REWARD measures it: Centerline
+        # accumulates 3D segment lengths, so a 2D (x,z) sum drifts on every
+        # slope and the diamond lands further along the line than the bonus
+        # actually fires. Only 3.5m over this whole track, but the drawing
+        # exists to be trusted, and 2D would be wrong by more on a hillier map.
+        src3, cum = spliced_line_3d(uid)
+        if not src3:
+            src3, cum = [], [0.0]
+        total = cum[-1] or 1.0
+        for m in marks:
+            try:
+                at = float(m["s"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            at = max(0.0, min(at, total))
+            # INTERPOLATE along the segment; do not snap to the nearest point.
+            # A hand-drawn patch can be two points spanning 126m, so snapping
+            # put a marker at the far END of the straight - 60m from where its
+            # bonus actually fires. The reward compares `s` numerically and was
+            # always right; it was only the drawing that lied, which is worse,
+            # because the drawing is what you place them with.
+            j = next((k for k, c in enumerate(cum) if c >= at), len(cum) - 1)
+            j = max(1, min(j, len(pts) - 1))
+            c0, c1 = cum[j - 1], cum[j]
+            t = 0.0 if c1 <= c0 else (at - c0) / (c1 - c0)
+            t = max(0.0, min(1.0, t))
+            p0, p1 = pts[j - 1], pts[j]
+            out["markers"].append({
+                "s": round(at, 1),
+                "bonus": float(m.get("bonus", 0.0)),
+                "xz": [round(p0[0] + (p1[0] - p0[0]) * t, 1),
+                       round(p0[1] + (p1[1] - p0[1]) * t, 1)],
+            })
+    return out
+
+
+def route3d_payload(uid: str) -> dict:
+    """Everything the /route3d viewer needs: the occupancy blocks in world
+    space, the deck-snapped reference line, landmarks, jump spans and marks.
+    Repackages what route_payload / spliced_line_3d already compute."""
+    out = {"ok": True, "map": uid, "block": [32, 8, 32], "base_height": 8,
+           "blocks": [], "names": [], "line": [], "checkpoints": [],
+           "spawn": None, "finish": None, "jumps": [], "marks": []}
+    try:
+        with open(os.path.join(ROOT, "maps", f"{uid}.json")) as f:
+            g = json.load(f)
+    except (OSError, ValueError):
+        g = {}
+    out["block"] = g.get("block_size") or [32, 8, 32]
+    out["base_height"] = g.get("base_height", 8)
+    names = g.get("names") or []
+    out["names"] = names
+    boxes = g.get("boxes") or []
+    # boxes is flat, 8 ints/block: x,y,z,dir,sx,sy,sz,nameidx
+    if boxes and len(boxes) % 8 == 0:
+        for i in range(0, len(boxes), 8):
+            x, y, z, d, sx, sy, sz, ni = boxes[i:i + 8]
+            out["blocks"].append([x, y, z, d, sx, sy, sz, ni])
+
+    p3, _ = spliced_line_3d(uid)
+    if p3:
+        out["line"] = [[round(p[0], 1), round(p[1], 1), round(p[2], 1)]
+                       for p in p3]
+
+    with LINK.lock:
+        live = (LINK.latest or {}).get("map") or LINK.last_map
+        cps = list(LINK.cps or [])
+        finish = list(LINK.finish) if LINK.finish else None
+        spawn = list(LINK.spawn) if LINK.spawn else None
+    if live == uid:
+        out["checkpoints"] = [[round(c[0], 1), round(c[1], 1), round(c[2], 1)]
+                              for c in cps]
+        if finish:
+            out["finish"] = [round(finish[0], 1), round(finish[1], 1),
+                             round(finish[2], 1)]
+        if spawn:
+            out["spawn"] = [round(spawn[0], 1), round(spawn[1], 1),
+                            round(spawn[2], 1)]
+
+    for pat in _load_route_edits(uid):
+        if pat.get("kind") == "jump" and pat.get("points"):
+            pp = pat["points"]
+            out["jumps"].append([pp[0][0], pp[0][1], pp[-1][0], pp[-1][1]])
+
+    _cfg = {}
+    for _p in (config_name(uid, active_profile()) + ".json",
+               f"{uid}.explore.json", f"{uid}.json"):
+        try:
+            with open(os.path.join(ROOT, "configs", _p)) as fh:
+                _cfg = json.load(fh)
+            break
+        except (OSError, ValueError):
+            continue
+    for nm, p in (_cfg.get("marks") or {}).items():
+        try:
+            out["marks"].append({"name": nm, "pos": [float(p[0]), float(p[1]),
+                                                     float(p[2])]})
+        except (TypeError, ValueError, IndexError):
+            pass
     return out
 
 
@@ -802,6 +1154,64 @@ def tail_jsonl(path: str, n: int = 25) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return out
+
+
+_runstats_cache = {"key": None, "val": {}}
+
+
+def run_stats() -> dict:
+    """Whole-run totals from the why log, not just the recent tail.
+
+    /api/why returns the last 25 entries, which is right for the WHY overlay
+    but makes the bar's per-checkpoint cells misleading: a finish 35 episodes
+    ago shows as "CP5 0/20" while "best lap" still (correctly) reports it. Two
+    true numbers that look like a contradiction.
+
+    The log is rotated at the start of every run, so scanning the whole file
+    IS "this run" - no episode-range bookkeeping needed. Cached on (size,
+    mtime) because the overlays poll every few seconds and this would
+    otherwise re-read a growing file each time.
+    """
+    path = os.path.join(ROOT, "logs", "why.jsonl")
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime)
+    except OSError:
+        return {"episodes": 0, "reached": {}, "finishes": 0, "best_ms": None}
+    if _runstats_cache["key"] == key:
+        return _runstats_cache["val"]
+
+    episodes = finishes = 0
+    best_ms = None
+    cp_total = 0
+    reached: dict[int, int] = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                episodes += 1
+                cp_total = r.get("cp_total") or cp_total
+                cp = int(r.get("cp") or 0)
+                # Cumulative: an episode that reached CP4 also reached 1..3.
+                for n in range(1, cp + 1):
+                    reached[n] = reached.get(n, 0) + 1
+                if r.get("reason") == "FINISH":
+                    finishes += 1
+                    t = r.get("race_time")
+                    if t and (best_ms is None or t < best_ms):
+                        best_ms = t
+    except OSError:
+        pass
+    val = {"episodes": episodes, "reached": reached, "finishes": finishes,
+           "best_ms": best_ms, "cp_total": cp_total}
+    _runstats_cache["key"] = key
+    _runstats_cache["val"] = val
+    return val
 
 
 def list_runs() -> dict:
@@ -1014,6 +1424,68 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, b"index.html missing", "text/plain")
             return
 
+        # Standalone WHY overlay for an OBS browser source. Its own page
+        # rather than part of the panel: a browser source wants one thing, big
+        # enough to read at stream resolution, on a transparent background,
+        # with no controls to mis-click. Query params n / ms / terms / solid.
+        # Horizontal training status bar, for a browser source UNDER the
+        # game view. /why is its portrait counterpart; they show different
+        # things on purpose (per-episode detail vs run-level state).
+        if self.path.split("?")[0] in ("/game", "/game.html"):
+            try:
+                with open(os.path.join(HERE, "game.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self._send(404, b"game.html missing", "text/plain")
+            return
+
+        if self.path.split("?")[0] in ("/bar", "/bar.html"):
+            try:
+                with open(os.path.join(HERE, "bar.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self._send(500, b"bar.html missing", "text/plain")
+            return
+
+        if self.path.split("?")[0] in ("/why", "/why.html"):
+            try:
+                with open(os.path.join(HERE, "why.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self._send(500, b"why.html missing", "text/plain")
+            return
+
+        if self.path in ("/route3d", "/route3d.html"):
+            try:
+                with open(os.path.join(HERE, "route3d.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self._send(500, b"route3d.html missing", "text/plain")
+            return
+
         if self.path == "/grid" or self.path == "/grid.html":
             try:
                 with open(os.path.join(HERE, "grid.html"), "rb") as f:
@@ -1050,15 +1522,23 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 fps = max(1, min(30, int((q.get("fps") or ["12"])[0])))
                 width = max(160, min(1920, int((q.get("w") or ["960"])[0])))
+                qual = max(2, min(31, int((q.get("q") or ["7"])[0])))
             except ValueError:
-                fps, width = 12, 960
+                fps, width, qual = 12, 960, 7
+            # crop=W:H:X:Y, validated strictly - it is interpolated into an
+            # ffmpeg filter string, so nothing but digits and colons gets in.
+            crop = (q.get("crop") or [""])[0] or None
+            if crop and not re.fullmatch(r"\d{1,5}:\d{1,5}:\d{1,5}:\d{1,5}",
+                                         crop):
+                self._send(400, b"crop must be W:H:X:Y", "text/plain")
+                return
             global _mjpeg_n
             with _mjpeg_lock:
                 if _mjpeg_n >= _MJPEG_MAX:
                     self._send(503, b"too many live streams", "text/plain")
                     return
                 _mjpeg_n += 1
-            proc = subprocess.Popen(mjpeg_ffmpeg(disp, fps, width),
+            proc = subprocess.Popen(mjpeg_ffmpeg(disp, fps, width, qual, crop),
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL)
             self.send_response(200)
@@ -1106,6 +1586,70 @@ class Handler(BaseHTTPRequestHandler):
                                "text/html; charset=utf-8")
             except OSError:
                 self._send(404, b"not found", "text/plain")
+            return
+
+        if self.path == "/api/train/args":
+            # The RUNNING trainer's actual command line, mapped back to the
+            # panel's form fields - so the launch form can show what is
+            # really in force, even for a run started outside the panel.
+            pid = TRAINER.pid()
+            if not pid:
+                self._json({"running": False, "args": {}})
+                return
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    argv = [a for a in f.read().split(b"\0") if a]
+                argv = [a.decode("utf-8", "replace") for a in argv]
+            except OSError:
+                self._json({"running": False, "args": {}})
+                return
+            # flag -> (form key, kind). kind: v = takes a value, b = bare bool
+            FLAGS = {
+                "--stage": ("stage", "v"), "--steps": ("steps", "v"),
+                "--name": ("name", "v"), "--resume": ("resume", "b"),
+                "--control-hz": ("control_hz", "v"),
+                "--gradient-steps": ("gradient_steps", "v"),
+                "--promote-to": ("promote_to", "v"),
+                "--init-from": ("init_from", "v"),
+                "--gate-order": ("gate_order", "v"),
+                "--learning-starts": ("learning_starts", "v"),
+                "--bootstrap-random": ("bootstrap_random", "v"),
+                "--buffer-size": ("buffer_size", "v"),
+                "--archive-every": ("archive_every", "v"),
+                "--instances": ("instances", "v"),
+                "--bootstrap": ("bootstrap", "v"),
+                "--seats": ("seats", "v"), "--handover": ("handover", "v"),
+                "--handover-patience": ("handover_patience", "v"),
+                "--then-race": ("then_race", "b"),
+                "--curriculum": ("curriculum", "b"),
+                "--auto-rollback": ("auto_rollback", "b"),
+                "--max-offset": ("max_offset", "v"),
+                "--stuck-speed": ("stuck_speed", "v"),
+                "--stuck-seconds": ("stuck_seconds", "v"),
+                "--max-episode-s": ("max_episode_s", "v"),
+                "--w-weave": ("w_weave", "v"),
+                "--w-reversal": ("w_reversal", "v"),
+                "--cp-radius": ("cp_radius", "v"),
+                "--line": ("line", "v"), "--regress-window": ("regress_window", "v"),
+                "--regress-drop": ("regress_drop", "v"),
+            }
+            out: dict = {}
+            i = 0
+            while i < len(argv):
+                spec = FLAGS.get(argv[i])
+                if spec:
+                    key, kind = spec
+                    if kind == "b":
+                        out[key] = True
+                    elif i + 1 < len(argv):
+                        out[key] = argv[i + 1]
+                        i += 1
+                i += 1
+            if "line" in out:
+                out["line"] = os.path.basename(out["line"])
+            self._json({"running": True, "pid": pid, "args": out,
+                        "raw": " ".join(argv[argv.index("train/train_sac.py") + 1:])
+                        if "train/train_sac.py" in argv else " ".join(argv)})
             return
 
         if self.path.startswith("/api/model"):
@@ -1240,9 +1784,66 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"idle": True})
             return
 
-        if self.path == "/api/why":
+        if self.path.startswith("/api/why"):
+            # ?n= how many episodes to return. The default stays 25 for the WHY
+            # overlay, which shows a handful in detail - but the bar's rolling
+            # windows are only as long as what it can see here, so asking for
+            # win=100 there silently capped at 25 and the percentages were over
+            # a window the label did not describe.
+            from urllib.parse import parse_qs, urlparse
+            try:
+                n = int((parse_qs(urlparse(self.path).query).get("n")
+                         or ["25"])[0])
+            except ValueError:
+                n = 25
+            n = max(1, min(500, n))
             self._json({"entries": tail_jsonl(
-                os.path.join(ROOT, "logs", "why.jsonl"), 25)})
+                os.path.join(ROOT, "logs", "why.jsonl"), n)})
+            return
+
+        if self.path == "/api/runstats":
+            self._json(run_stats())
+            return
+
+        if self.path == "/api/lineage":
+            # Which model is driving, when its lineage began, and what it was
+            # built on. Written by train_sac at startup.
+            #
+            # NOT /api/model - that name is already taken by an older route
+            # (line ~1187) which matches with startswith(), so anything added
+            # under it here is unreachable.
+            try:
+                with open(os.path.join(ROOT, "logs", "model.json")) as fh:
+                    self._json(json.load(fh))
+            except (OSError, ValueError):
+                self._json({})
+            return
+
+        if self.path == "/api/handover":
+            # How far the explore stage is from handing over to the racer.
+            # Written by train.handover.HandoverWatch; absent when the run is
+            # not an explore stage with --handover, which the overlay reads as
+            # "no countdown to show" rather than as an error.
+            #
+            # Guard against a STALE file: a run without --handover never
+            # rewrites it, and a crashed --handover run leaves "done": true
+            # frozen. Only trust it when it is at least as new as the live
+            # trainer's identity file AND that trainer is still running -
+            # otherwise the overlay shows a dead run's "handing over" and
+            # best lap over whatever is driving now.
+            hp = os.path.join(ROOT, "logs", "handover.json")
+            mp = os.path.join(ROOT, "logs", "model.json")
+            try:
+                fresh = os.path.getmtime(hp) >= os.path.getmtime(mp) - 5
+                pid = json.load(open(mp)).get("pid")
+                alive = bool(pid) and os.path.exists(f"/proc/{pid}")
+                if fresh and alive:
+                    with open(hp) as fh:
+                        self._json(json.load(fh))
+                else:
+                    self._json({})
+            except (OSError, ValueError):
+                self._json({})
             return
 
         if self.path == "/api/archive":
@@ -1368,6 +1969,61 @@ class Handler(BaseHTTPRequestHandler):
                 "groups": {m: surfaces.GROUPS.get(m, "other")
                            for m in surfaces.MATERIALS},
             })
+            return
+
+        if self.path.startswith("/api/route3d/traces"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            with LINK.lock:
+                live = (LINK.latest or {}).get("map") or LINK.last_map
+            uid = (q.get("map") or [live or ""])[0]
+            n = int((q.get("n") or ["160"])[0])
+            if not uid or os.sep in uid:
+                self._json({"ok": False, "err": "no map"}, 400)
+                return
+            tdir = os.path.join(ROOT, "runs", uid, "traces")
+            seats: dict = {}
+            try:
+                files = sorted(
+                    (os.path.join(tdir, f) for f in os.listdir(tdir)
+                     if f.endswith(".json")),
+                    key=os.path.getmtime, reverse=True)[:max(1, n)]
+            except OSError:
+                files = []
+            for fp in files:
+                m = re.search(r"_i(\d)_", os.path.basename(fp))
+                seat = int(m.group(1)) if m else 0
+                try:
+                    with open(fp) as fh:
+                        doc = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                fld = doc.get("fields") or []
+                s = doc.get("samples") or []
+                if len(s) < 2 or "x" not in fld:
+                    continue
+                xi, yi, zi = fld.index("x"), fld.index("y"), fld.index("z")
+                stride = max(1, len(s) // 50)
+                poly = [[round(r[xi], 1), round(r[yi], 1), round(r[zi], 1)]
+                        for r in s[::stride]]
+                seats.setdefault(str(seat), []).append(poly)
+            self._json({"ok": True, "map": uid, "seats": seats})
+            return
+
+        if self.path.startswith("/api/route3d"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            with LINK.lock:
+                live = (LINK.latest or {}).get("map") or LINK.last_map
+            uid = (q.get("map") or [live or ""])[0]
+            if not uid or os.sep in uid:
+                self._json({"ok": False, "err": "no map"}, 400)
+                return
+            try:
+                LINK.ensure_landmarks()
+            except Exception:                            # noqa: BLE001
+                pass
+            self._json(route3d_payload(uid))
             return
 
         if self.path.startswith("/api/route"):
@@ -1516,10 +2172,26 @@ class Handler(BaseHTTPRequestHandler):
                              str(int(body["handover_patience"]))]
                 if body.get("then_race"):
                     argv += ["--then-race"]
+            if body.get("curriculum"):
+                argv += ["--curriculum"]
             if body.get("auto_rollback"):
                 argv += ["--auto-rollback"]
             if body.get("bootstrap"):
                 argv += ["--bootstrap", str(body["bootstrap"])]
+            # The warm-up counts toward the step budget. If it is >= steps the
+            # run pursuit-drives to the limit and stops having done ZERO
+            # gradient steps - it looks like training that never learns.
+            _steps = int(body.get("steps") or 0)
+            _ls = int(body.get("learning_starts") or 0)
+            if _steps and _ls and _ls >= _steps:
+                self._json({"ok": False,
+                            "err": f"warm-up length ({_ls}) must be well below "
+                                   f"total steps ({_steps}) - the warm-up "
+                                   f"counts toward the budget, so as set the "
+                                   f"run would warm up and then stop without "
+                                   f"a single gradient step. Raise steps or "
+                                   f"lower the warm-up."}, 400)
+                return
             if body.get("steps"):
                 argv += ["--steps", str(int(body["steps"]))]
             if body.get("resume"):
@@ -1566,6 +2238,16 @@ class Handler(BaseHTTPRequestHandler):
             # local checkpoint.
             if str(body.get("init_from") or "").strip():
                 argv += ["--init-from", str(body["init_from"]).strip()]
+            # Warm-up length / noise, buffer size, snapshot cadence - launch
+            # only, same reason as control-hz above.
+            if body.get("learning_starts") not in (None, "", 0):
+                argv += ["--learning-starts", str(int(body["learning_starts"]))]
+            if body.get("bootstrap_random") not in (None, ""):
+                argv += ["--bootstrap-random", str(float(body["bootstrap_random"]))]
+            if body.get("buffer_size") not in (None, "", 0):
+                argv += ["--buffer-size", str(int(body["buffer_size"]))]
+            if body.get("archive_every") not in (None, "", 0):
+                argv += ["--archive-every", str(float(body["archive_every"]))]
             # Tuning knobs, all optional. Phase 2 moves these into a per-map
             # config the running trainer re-reads; for now they are set at
             # launch, which is why the panel disables them while it runs.
@@ -1585,6 +2267,72 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/train/stop":
             self._json(TRAINER.stop())
             return
+
+        if self.path == "/api/route/markers":
+            # Reward markers, placed by clicking the route editor.
+            #
+            # Stored as a DISTANCE along the line, not an XZ point, because
+            # that is what the reward compares against (max_s). The client
+            # sends a world XZ from the click and the distance is resolved
+            # HERE, against the same roadtrace cache the trainer uses - doing
+            # it in the browser would mean two implementations of "how far
+            # along is this", and they would drift.
+            uid = (body or {}).get("map", "")
+            marks_in = (body or {}).get("markers", [])
+            if not uid or os.sep in uid or not isinstance(marks_in, list):
+                return self._json({"ok": False, "err": "bad map/markers"}, 400)
+            # The SPLICED line, so a marker sits where the reward will fire
+            # after route edits, not where it would have on the raw trace.
+            pts3, cum = spliced_line_3d(uid)
+            if not pts3:
+                return self._json({"ok": False,
+                                   "err": f"no roadtrace for {uid}"}, 400)
+            clean = []
+            for m in marks_in[:32]:
+                try:
+                    bonus = float(m.get("bonus", 200.0))
+                    if "s" in m and m.get("s") is not None:
+                        at = float(m["s"])
+                    else:
+                        # nearest line point to the click, then its distance
+                        cx, cz = float(m["xz"][0]), float(m["xz"][1])
+                        best, bd = 0, None
+                        for k, q in enumerate(pts3):
+                            d = (q[0] - cx) ** 2 + (q[2] - cz) ** 2
+                            if bd is None or d < bd:
+                                bd, best = d, k
+                        at = cum[best]
+                except (KeyError, TypeError, ValueError, IndexError):
+                    continue
+                at = max(0.0, min(at, cum[-1]))
+                entry = {"s": round(at, 1), "bonus": bonus}
+                # Optional lateral limit. Absent = the marker has no width and
+                # fires on progress alone; set it to require the car actually be
+                # near the line when it passes.
+                lim = m.get("max_offset")
+                if lim is not None:
+                    try:
+                        entry["max_offset"] = float(lim)
+                    except (TypeError, ValueError):
+                        pass
+                clean.append(entry)
+            clean.sort(key=lambda m: m["s"])
+            cfg_file = os.path.join(ROOT, "configs", f"{uid}.explore.json")
+            try:
+                with open(cfg_file) as fh:
+                    cfg = json.load(fh)
+            except (OSError, ValueError):
+                cfg = {}
+            cfg["markers"] = clean
+            try:
+                os.makedirs(os.path.dirname(cfg_file), exist_ok=True)
+                tmp = cfg_file + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(cfg, fh, indent=2)
+                os.replace(tmp, cfg_file)
+            except OSError as ex:
+                return self._json({"ok": False, "err": str(ex)}, 500)
+            return self._json({"ok": True, "markers": clean})
 
         if self.path == "/api/route/edits":
             uid = (body or {}).get("map", "")
@@ -1607,6 +2355,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 path = os.path.join(ROOT, "maps", f"{uid}.route_edits.json")
                 os.makedirs(os.path.dirname(path), exist_ok=True)
+                # Keep the LAST NON-EMPTY version as .bak. The route editor's
+                # Revert button saves an empty patch list with no undo, so a
+                # misclick wipes a lot of hand work; this makes it recoverable.
+                if os.path.isfile(path):
+                    try:
+                        prev = json.load(open(path))
+                        if prev.get("patches"):
+                            shutil.copy2(path, path + ".bak")
+                    except (OSError, ValueError):
+                        pass
                 with open(path, "w") as f:
                     json.dump({"map": uid, "patches": clean}, f, indent=1)
             except OSError as ex:
@@ -1620,7 +2378,8 @@ class Handler(BaseHTTPRequestHandler):
             uid = ((body or {}).get("map") or (latest or {}).get("map")
                    or LINK.last_map)
             from env.config import config_path
-            path = config_path(ROOT, uid, "")
+            # Same file /api/mark wrote to - the running trainer's profile.
+            path = config_path(ROOT, uid, active_profile())
             try:
                 with open(path) as f:
                     data = json.load(f)
@@ -1645,31 +2404,65 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "err": str(ex)[:200]}, 500)
 
         if self.path == "/api/mark":
-            # Record where the car is, under a name. Stored as a world
-            # position rather than an arc length - see tools/mark.py for why.
+            # Record where a car is, under a name. Stored as a world position
+            # rather than an arc length - see tools/mark.py for why.
             name = (body or {}).get("name", "").strip()
             if not name:
                 return self._json({"ok": False, "err": "need a name"}, 400)
+            try:
+                seat = int((body or {}).get("seat", 0))
+            except (TypeError, ValueError):
+                seat = 0
             with LINK.lock:
                 latest = LINK.latest
-            if not latest or "pos" not in latest:
+            uid = ((body or {}).get("map")
+                   or (latest.get("map") if latest else None) or LINK.last_map)
+            pos = None
+            # 1) An explicit point clicked on the route-editor map. Y is taken
+            #    from the reference line so mark_from/mark_to resolve sanely.
+            xz = (body or {}).get("xz")
+            if xz and len(xz) == 2:
+                try:
+                    cx, cz = float(xz[0]), float(xz[1])
+                    p3, _ = spliced_line_3d(uid)
+                    y = 0.0
+                    if p3:
+                        y = min(p3, key=lambda q: (q[0] - cx) ** 2
+                                + (q[2] - cz) ** 2)[1]
+                    pos = [cx, y, cz]
+                except (TypeError, ValueError):
+                    pos = None
+            # 2) Otherwise, where a car actually is. In splitscreen the
+            #    top-level record is the CAMERA's car and carries no position;
+            #    the seat's own car is in players[seat].
+            if pos is None and latest:
+                players = latest.get("players") or []
+                if 0 <= seat < len(players) and players[seat].get("pos"):
+                    pos = players[seat]["pos"]
+                elif "pos" in latest:
+                    pos = latest["pos"]
+            if not pos:
                 return self._json(
-                    {"ok": False, "err": "no telemetry - is a map loaded?"}, 409)
-            uid = latest.get("map") or LINK.last_map
+                    {"ok": False, "err": "no position - click the map, or load "
+                     f"a map with a car on seat {seat}"}, 409)
+            # Write to the config the RUNNING trainer actually reads, not a
+            # hardcoded race file nothing has open.
             from env.config import config_path
-            path = config_path(ROOT, uid, "")
+            profile = active_profile()
+            path = config_path(ROOT, uid, profile)
             try:
                 with open(path) as f:
                     data = json.load(f)
             except (OSError, json.JSONDecodeError):
                 data = {}
-            pos = [round(float(x), 2) for x in latest["pos"]]
+            pos = [round(float(x), 2) for x in pos]
             data.setdefault("marks", {})[name] = pos
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)
             return self._json({"ok": True, "name": name, "pos": pos,
-                               "map": uid,
+                               "map": uid, "seat": seat,
+                               "profile": profile or "race",
                                "marks": data["marks"]})
 
         if self.path == "/api/config":

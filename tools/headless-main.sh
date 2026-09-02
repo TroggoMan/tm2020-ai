@@ -24,6 +24,49 @@ set -euo pipefail
 
 DISP=":99"
 VNC_PORT=5999
+# Render geometry: the Xvfb screen AND gamescope's nested output, kept equal so
+# the game fills the display with no letterbox.
+#
+# THE RENDER HEIGHT IS CAPPED AT 1080 and the display size does not raise it.
+# Measured 2026-08-31 by finding the Openplanet menu bar (which is drawn at the
+# top-left of the game's render VIEWPORT, so its y offset is the letterbox bar
+# height - a content-independent marker, unlike brightness):
+#
+#   display 1080x1080  ->  renders 1080x1080   fills, bar at y=4
+#   display 1440x1440  ->  renders 1440x960    bar at y=244
+#   display 1920x1280  ->  renders 1920x1080   bar at y=104
+#
+# So the game picks a mode from its OWN list, capped at 1080 tall, and centres
+# it. A display taller than 1080 buys nothing but black bars, and a display
+# WIDER than the mode it picks is fine. 1920x1080 is therefore the sharpest
+# useful framebuffer, and the default.
+#
+# That resolution is the game's own setting, stored compressed in
+# Config/*.Profile.Gbx, so nothing out here can change it - raise it INSIDE the
+# game (Settings -> Graphics) first, then match the display to it here.
+#
+# Two traps that each cost a restart:
+#
+#  * Do not measure a LOADING screen, a menu backdrop or the attract-mode
+#    VIDEO. Those are 16:9 assets and letterbox inside any other aspect, which
+#    produced a confident and completely wrong "the engine clamps to 16:9 and
+#    wastes 44% of a square". Measure the live 3D render.
+#  * Do not measure by darkness. A dark 3D floor reads as "no content" and a
+#    filled square reads as letterboxed. Use the Openplanet bar's y offset.
+#
+# Aspect is purely a STREAM layout decision - nothing in the AI looks at the
+# rendered image, the policy's whole world is plugin telemetry plus the
+# occupancy grid. So match the OBS block to the game's 16:9, rather than
+# fighting the game to match a block.
+#
+# Careful raising this: TM2020 ramps analogue steering PER FRAME, so a
+# resolution that drops the frame rate directly degrades the steering that
+# actually reaches the car - the same failure mode as an unfocused window.
+#
+# Changing these needs a game restart; the game reads its resolution from the
+# display once, at start.
+GAME_W="${TMAI_GAME_W:-1920}"
+GAME_H="${TMAI_GAME_H:-1080}"
 COMPAT="/mnt/4TB/SteamLibrary/steamapps/compatdata/2225070"
 BROKER_PORT=8767
 # Path AS THE GAME SEES IT: relative to Documents/Trackmania/Maps/, NO "Maps/"
@@ -69,12 +112,30 @@ xvfb_alive() {
   DISPLAY="$DISP" timeout 3 xdpyinfo >/dev/null 2>&1
 }
 
+xvfb_geom() {
+  DISPLAY="$DISP" timeout 3 xdpyinfo 2>/dev/null \
+    | awk '/dimensions:/ {print $2; exit}'
+}
+
 start_xvfb() {
+  # A live Xvfb at the WRONG size has to go. Xvfb's screen is fixed at start
+  # (its RANDR advertises the one mode it was given, so xrandr cannot resize
+  # it), and "is it answering?" alone would happily keep a 1920x1080 display
+  # after you asked for a square - the geometry change would look like it had
+  # been applied and nothing would differ on the stream.
+  if xvfb_alive && [ "$(xvfb_geom)" != "${GAME_W}x${GAME_H}" ]; then
+    echo "Xvfb $DISP is $(xvfb_geom), want ${GAME_W}x${GAME_H} - restarting it"
+    echo "  (this kills whatever is rendering on $DISP, the game included)"
+    pkill -f "x11vnc.*$DISP" 2>/dev/null || true
+    pkill -f "Xvfb $DISP" 2>/dev/null || true
+    sleep 2
+  fi
   if ! xvfb_alive; then
     echo "starting Xvfb $DISP"
     pkill -f "Xvfb $DISP" 2>/dev/null || true       # clear any defunct one
     sleep 1
-    setsid Xvfb "$DISP" -screen 0 1920x1080x24 -nolisten tcp >/dev/null 2>&1 &
+    setsid Xvfb "$DISP" -screen 0 "${GAME_W}x${GAME_H}x24" \
+      -nolisten tcp >/dev/null 2>&1 &
     for _ in $(seq 1 15); do xvfb_alive && break; sleep 1; done
     xvfb_alive || { echo "Xvfb $DISP would not come up" >&2; exit 1; }
   fi
@@ -191,7 +252,8 @@ up)
     echo "  via gamescope (nested compositor on $DISP)"
     DISPLAY="$DISP" WAYLAND_DISPLAY= XAUTHORITY= SDL_VIDEODRIVER=x11 \
     env "${common_env[@]}" \
-    setsid gamescope -W 1920 -H 1080 -w 1920 -h 1080 -r 60 \
+    setsid gamescope -W "$GAME_W" -H "$GAME_H" -w "$GAME_W" -h "$GAME_H" \
+      -r 60 \
       --backend sdl --force-windows-fullscreen \
       -- "${proton_cmd[@]}" >>"$LOG" 2>&1 &
   else
@@ -236,9 +298,33 @@ down)
   sleep 1
   pkill -9 -f "common/Trackmania/Trackmania" 2>/dev/null || true
   pkill -9 -f "proton waitforexitandrun.*Trackmania" 2>/dev/null || true
-  pkill -9 -f "gamescope .*Trackmania\|gamescope -W 1920" 2>/dev/null \
+  # The WINE-side process, which none of the patterns above can match: its
+  # cmdline is a DOS path with BACKSLASHES and no appid -
+  #
+  #   Z:\mnt\4TB\SteamLibrary\steamapps\common\Trackmania\Trackmania.exe
+  #
+  # so "2225070" misses it and "common/Trackmania/Trackmania" misses it on the
+  # slashes. It survived `down` twice, and the next `up` then refused with
+  # "a Trackmania.exe is already running". -i because the case of the drive
+  # path is not guaranteed. Killed by pattern on the exe NAME only, which is
+  # slash-agnostic.
+  pkill -9 -if 'trackmania\.exe' 2>/dev/null \
+    && echo "stopped Trackmania.exe (wine side)" || true
+  # -W [0-9], not -W 1920: the render geometry is configurable now, and a
+  # literal width here would silently stop matching the moment it changed -
+  # leaving a gamescope holding the display after `down` claimed success.
+  pkill -9 -f "gamescope .*Trackmania\|gamescope -W [0-9]" 2>/dev/null \
     && echo "stopped gamescope" || true
   sleep 1
+  # wineserver outlives every game process and KEEPS THE PLUGIN PORT OPEN.
+  # Without this, `down` reports success while 127.0.0.1:8766 is still held by
+  # a wineserver, and the next `up` refuses to run: op-mode.sh treats a
+  # listener on 8766 as proof the game is up, so Developer mode cannot be set
+  # and the launch aborts. Costs one confusing restart every time.
+  if ss -tlnH 2>/dev/null | grep -qE '127.0.0.1:8766 '; then
+    pkill -9 -x wineserver 2>/dev/null && echo "stopped wineserver (held 8766)"
+    sleep 2
+  fi
   DISPLAY="$DISP" pkill -f "openbox" 2>/dev/null && echo "stopped openbox" || true
   pkill -f "x11vnc.*$DISP" 2>/dev/null && echo "stopped x11vnc" || true
   pkill -f "Xvfb $DISP" 2>/dev/null && echo "stopped Xvfb $DISP" || true
@@ -246,8 +332,36 @@ down)
 vnc)
   echo "vncviewer 127.0.0.1:$VNC_PORT"
   ;;
+key)
+  # Send a KEYSTROKE to the game. F3 toggles the Openplanet menu bar, which is
+  # the one thing you want gone on a stream:
+  #
+  #   tools/headless-main.sh key F3
+  #
+  # Not a pad button, and it cannot be: the virtual pads are uinput GAMEPADS,
+  # and no gamepad can produce F3 - Openplanet binds a keyboard key. But the
+  # game lives on an Xvfb, which is plain X11, so XTEST reaches it directly and
+  # no extra virtual keyboard device is needed.
+  #
+  # --window is deliberately NOT used: TM2020 ignores synthetic events sent to
+  # a specific window and only responds to XTEST against the focused one, which
+  # openbox guarantees is the game.
+  KEY="${2:-F3}"
+  if ! DISPLAY="$DISP" timeout 3 xdpyinfo >/dev/null 2>&1; then
+    echo "display $DISP is not up - nothing to send $KEY to" >&2
+    exit 1
+  fi
+  WIN=$(DISPLAY="$DISP" xdotool search --name "^Trackmania$" 2>/dev/null | head -1)
+  if [ -z "$WIN" ]; then
+    echo "no Trackmania window on $DISP" >&2
+    exit 1
+  fi
+  DISPLAY="$DISP" xdotool windowactivate --sync "$WIN" 2>/dev/null || true
+  DISPLAY="$DISP" xdotool key --clearmodifiers "$KEY"
+  echo "sent $KEY to the game on $DISP"
+  ;;
 *)
-  echo "usage: $0 {up|down|vnc|map \"<path>\"}" >&2
+  echo "usage: $0 {up|down|vnc|key <KEY>|map \"<path>\"}" >&2
   exit 1
   ;;
 esac

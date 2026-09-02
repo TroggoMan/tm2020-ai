@@ -69,6 +69,111 @@ def _nearest_idx(pts_xz: np.ndarray, p) -> int:
     return int(np.argmin(np.einsum("ij,ij->i", d, d)))
 
 
+def _dekink(pts: np.ndarray, cos_thresh: float = -0.25, max_passes: int = 5):
+    """Drop points where the line folds back on itself.
+
+    Splicing several hand-drawn patches whose ends do not quite line up can
+    leave a point whose incoming and outgoing segments point in near-opposite
+    directions - the line goes forward, snaps ~20m back, then forward again.
+    The policy's lookahead sits on that backward leg and it steers to follow
+    it, which looks like the car deliberately turning round.
+
+    A reversal spike is one point, or a short run of them, between two
+    stretches heading the same way. Smooth curves never reverse and a real
+    90-ish corner has cos ~ 0, so a threshold of -0.25 (past ~105 deg) only
+    ever catches folds. Iterated, because removing one spike can expose the
+    next. Returns (points, n_removed).
+    """
+    pts = np.asarray(pts, float)
+    removed = 0
+    for _ in range(max_passes):
+        if len(pts) < 4:
+            break
+        keep = [0]
+        i = 1
+        dropped_this_pass = 0
+        while i < len(pts) - 1:
+            a = pts[i] - pts[keep[-1]]
+            b = pts[i + 1] - pts[i]
+            na = float(np.hypot(a[0], a[2]))
+            nb = float(np.hypot(b[0], b[2]))
+            if na > 1e-6 and nb > 1e-6 and \
+                    (a[0] * b[0] + a[2] * b[2]) / (na * nb) < cos_thresh:
+                dropped_this_pass += 1      # skip pts[i]
+                i += 1
+                continue
+            keep.append(i)
+            i += 1
+        keep.append(len(pts) - 1)
+        if not dropped_this_pass:
+            break
+        removed += dropped_this_pass
+        pts = pts[keep]
+    return pts, removed
+
+
+_RIDE_M = 2.0          # car sits this far above the deck cell floor
+_GROUND_EPS = 4.0      # world-y at or below this is the void / ground plane
+
+
+def _snap_to_deck(pts: np.ndarray, grid, verbose: bool = False):
+    """Pull each line point's Y onto the real road deck from the occupancy grid.
+
+    Hand-drawn patches are 2D; their height is lerped straight between the two
+    anchors, so a steep ramp comes out flattened and the line ends up buried in
+    the hillside 15-40m below the road it is meant to follow. Here every point
+    looks up the solid column at its own XZ and takes the deck nearest the
+    height it already has - with continuity, so the line does not hop onto a
+    bridge stacked overhead. Points over a genuine gap (no solid column) keep
+    their interpolated Y and are re-interpolated from the snapped neighbours.
+    """
+    if grid is None or not len(grid):
+        return pts, 0
+    bx, by, bz = grid.block
+    base_h = grid.base_height
+    ys = pts[:, 1].copy()
+    snapped = np.full(len(pts), np.nan)
+    prev = None
+    n_moved = 0
+    for i, p in enumerate(pts):
+        cx, _, cz = grid.world_to_cell(p)
+        decks = []
+        for cy in range(base_h - 1, base_h + 20):
+            if grid.is_solid(int(cx), cy, int(cz)):
+                wy = (cy - base_h) * by
+                if wy > _GROUND_EPS:
+                    decks.append(wy + _RIDE_M)
+        if not decks:
+            continue
+        # Target the drawn (interpolated) height: it is a sane top-down guess
+        # and is normally BELOW every real deck on a ramp, so "nearest deck"
+        # picks the road surface rather than a bridge stacked above it. Only
+        # fall back to continuity to kill a lone spike.
+        best = min(decks, key=lambda d: abs(d - ys[i]))
+        if prev is not None and abs(best - prev) > 30.0:
+            near = [d for d in decks if abs(d - prev) <= 30.0]
+            if near:
+                best = min(near, key=lambda d: abs(d - ys[i]))
+        snapped[i] = best
+        prev = best
+        if abs(best - ys[i]) > 0.5:
+            n_moved += 1
+    # fill gaps (no solid column) by interpolating between snapped neighbours
+    have = np.where(~np.isnan(snapped))[0]
+    if len(have) >= 2:
+        snapped_filled = np.interp(np.arange(len(pts)), have, snapped[have])
+        # leading / trailing runs with no anchor: keep the original Y
+        snapped_filled[:have[0]] = ys[:have[0]]
+        snapped_filled[have[-1] + 1:] = ys[have[-1] + 1:]
+        out = pts.copy()
+        out[:, 1] = snapped_filled
+        # light smoothing so a cell-boundary step does not read as a bump
+        k = np.array([0.25, 0.5, 0.25])
+        out[1:-1, 1] = np.convolve(out[:, 1], k, mode="valid")
+        return out, n_moved
+    return pts, 0
+
+
 def _apply_patches(pts: np.ndarray, patches: list[dict]):
     """pts: (N,3). Each patch replaces the span between its two anchors (matched
     to the nearest line points) with its own polyline; y is lerped from the two
@@ -190,6 +295,25 @@ def merged_line(root: str, uid: str, gates=None, dump=None,
                 jumps_world.append([float(base[lo, 0]), float(base[lo, 2]),
                                     float(base[hi - 1, 0]), float(base[hi - 1, 2])])
         layers.append(f"edits({len(patches)})")
+
+    base, kinks = _dekink(base)
+    if kinks and verbose:
+        print(f"  routemodel: removed {kinks} kink(s) (line folded back on "
+              f"itself - patch splice artefact)")
+
+    # Ride the real road deck: 2D patches lerp height between anchors, which
+    # buries the line in a hillside wherever the road ramps up steeply.
+    if patches:
+        try:
+            from .lidar import OccupancyGrid
+            _grid = OccupancyGrid.load(os.path.join(root, "maps", f"{uid}.json"))
+            base, moved = _snap_to_deck(base, _grid, verbose=verbose)
+            if moved and verbose:
+                print(f"  routemodel: snapped {moved} point(s) onto the "
+                      f"occupancy deck (patch height was off the road)")
+        except Exception as ex:                            # noqa: BLE001
+            if verbose:
+                print(f"  routemodel: deck-snap skipped ({ex})")
 
     line = Centerline(base, spacing=spacing)
     hw = np.interp(line.s / max(line.length, 1e-6),

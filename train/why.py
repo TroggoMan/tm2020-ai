@@ -22,9 +22,13 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import time
 from collections import deque
 
 from stable_baselines3.common.callbacks import BaseCallback
+
+#: Where a finished run's episodes go, relative to the live log's directory.
+ARCHIVE_DIR = "why-archive"
 
 # SAC records these every train() call. Names are SB3's, not ours.
 METRICS = ("train/ent_coef", "train/actor_loss", "train/critic_loss",
@@ -51,6 +55,49 @@ class WhyLog(BaseCallback):
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
         except OSError:
             pass
+        self._rotate()
+
+    def _rotate(self) -> None:
+        """Move the PREVIOUS run's episodes out of the live log.
+
+        The panel and the stream overlays read a tail of this file, so without
+        this they keep showing the last run's episodes - and worse, they show
+        them MIXED with the new run's, because episode numbering restarts at 1
+        every process while the file just grows. A viewer sees "ep 42" from a
+        run that ended hours ago sitting above "ep 3" from this one.
+
+        Renamed rather than deleted: the old episodes are the only record of
+        what a configuration actually did, and they are what a "did this change
+        help?" comparison is made from. A rename is atomic, so a reader that
+        has the file open mid-rotation keeps reading the archived inode instead
+        of seeing a half-truncated file.
+
+        This fires once per trainer PROCESS, which makes the handover
+        (explore -> race, an os.execv) start a fresh log too. That is right:
+        the race stage is a different run with a different policy, and its
+        episode numbers restart as well.
+        """
+        try:
+            if not os.path.isfile(self.path) or os.path.getsize(self.path) == 0:
+                return
+            dirname = os.path.dirname(self.path) or "."
+            archive = os.path.join(dirname, ARCHIVE_DIR)
+            os.makedirs(archive, exist_ok=True)
+            base = os.path.basename(self.path)
+            stem = base[:-6] if base.endswith(".jsonl") else base
+            dst = os.path.join(
+                archive, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
+            os.replace(self.path, dst)
+            print(f"  why log: archived the previous run to {dst}", flush=True)
+        except OSError as e:
+            # Never let log housekeeping stop a run from starting. Falling back
+            # to truncation keeps the overlays correct, which is the point.
+            print(f"  why log: could not archive ({e}); truncating instead",
+                  flush=True)
+            try:
+                open(self.path, "w").close()
+            except OSError:
+                pass
 
     # -- rules ------------------------------------------------------------
 

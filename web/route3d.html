@@ -1,0 +1,578 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>route 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0c10; color: #d7dde5;
+               font: 12px ui-monospace, monospace; overflow: hidden; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #hud { position: fixed; top: 10px; left: 12px; line-height: 1.7;
+         text-shadow: 0 1px 2px #000; pointer-events: none; }
+  #hud b { color: #fff; }
+  #legend { position: fixed; bottom: 12px; left: 12px; line-height: 1.6; }
+  #legend i { display: inline-block; width: 11px; height: 11px; margin-right: 6px;
+              border-radius: 2px; vertical-align: -1px; }
+  #err { position: fixed; top: 40%; width: 100%; text-align: center;
+         color: #ff7b72; font-size: 15px; }
+  .k { color: #8b98a5; }
+  #bar { position: fixed; top: 8px; right: 12px; }
+  #bar button { font: inherit; background: #1c2431; color: #d7dde5;
+                border: 1px solid #30363d; border-radius: 5px; padding: 4px 9px;
+                cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="legend"></div>
+<div id="bar"><button onclick="reload()">reload</button>
+  <button onclick="AUTO=!AUTO;this.textContent=AUTO?'auto: on':'auto: off'">auto: on</button></div>
+<div id="err"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const Q = new URLSearchParams(location.search);
+let AUTO = true;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c10);
+scene.fog = new THREE.Fog(0x0a0c10, 6000, 22000);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 20000);
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x202830, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+sun.position.set(1, 2, 1.3); scene.add(sun);
+
+// ---- tiny orbit control (drag = orbit, right/shift-drag = pan, wheel = zoom)
+const target = new THREE.Vector3();
+let dist = 1500, yaw = 0.6, pitch = 0.9;
+function applyCam() {
+  const cp = pitch, sp = Math.sin(cp), cpn = Math.cos(cp);
+  camera.position.set(
+    target.x + dist * cpn * Math.sin(yaw),
+    target.y + dist * sp,
+    target.z + dist * cpn * Math.cos(yaw));
+  camera.lookAt(target);
+}
+let drag = null;
+const cv = renderer.domElement;
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointerup', e => { drag = null; });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) {
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+    const k = dist * 0.0016;
+    target.addScaledVector(right, -dx * k);
+    target.addScaledVector(up, dy * k);
+  } else {
+    yaw -= dx * 0.005;
+    pitch = Math.max(0.03, Math.min(1.55, pitch + dy * 0.005));
+  }
+  applyCam();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  dist = Math.max(40, Math.min(12000, dist * (e.deltaY > 0 ? 1.12 : 0.89)));
+  applyCam();
+}, { passive: false });
+
+// ---- block family -> colour
+function familyColour(name) {
+  const n = (name || '').toLowerCase();
+  if (n.startsWith('roadtech') || n.startsWith('roadbump') || n.startsWith('roadgrass')) return 0x8a8f98; // tarmac
+  if (n.startsWith('roaddirt')) return 0xb5763b;   // dirt road
+  if (n.startsWith('platformdirt') || n.startsWith('platform')) return 0xd9b26a; // platform
+  if (n.startsWith('roadice')) return 0x9fd0e0;
+  if (n.includes('checkpoint')) return 0xf5a623;
+  if (n.startsWith('dirtcliff') || n.startsWith('dirthill') || n === 'dirt'
+      || n.startsWith('dirt0') || n.startsWith('decoterrain')) return 0x5b6b3a; // terrain
+  if (n.startsWith('water') || n.startsWith('decolake')) return 0x2b6c8f;
+  if (n.startsWith('structure') || n.startsWith('deco') || n.startsWith('stand')
+      || n.startsWith('technics') || n.startsWith('stage') || n.startsWith('pillar')
+      || n.startsWith('support')) return 0x2a2f38; // scenery, dim
+  return 0x6a7280;
+}
+const LEGEND = [
+  ['tarmac road', 0x8a8f98], ['dirt road', 0xb5763b], ['platform', 0xd9b26a],
+  ['terrain / hill', 0x5b6b3a], ['water', 0x2b6c8f], ['checkpoint block', 0xf5a623],
+  ['scenery', 0x2a2f38],
+];
+
+let world = new THREE.Group();
+scene.add(world);
+
+function clearWorld() {
+  world.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+  });
+  scene.remove(world);
+  world = new THREE.Group();
+  scene.add(world);
+}
+
+function build(d) {
+  clearWorld();
+  document.getElementById('err').textContent = '';
+  const [bx, by, bz] = d.block || [32, 8, 32];
+  const bh = d.base_height ?? 8;
+  const names = d.names || [];
+
+  // group block instances by colour
+  const byColour = new Map();
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  const bb = new THREE.Box3();
+  const tmp = new THREE.Object3D();
+  const isDeck = n => {
+    const s = (n || '').toLowerCase();
+    return s.startsWith('road') || s.startsWith('platform');
+  };
+  // terrain / water fills the whole column from the ground up; draw only its
+  // TOP surface as a thin slab so it does not render as a solid tower that
+  // occludes the road and the traces.
+  const isSurface = n => {
+    const s = (n || '').toLowerCase();
+    return isDeck(n) || s.startsWith('dirt') || s.startsWith('decoterrain')
+      || s.startsWith('water') || s.startsWith('decolake')
+      || s.startsWith('grass') || s.includes('hill') || s.includes('cliff');
+  };
+  // ---- HEIGHTFIELD: one continuous surface over the road/terrain cells,
+  //      vertex Y = deck height. Real geometry derived from the occupancy
+  //      dump - not per-block meshes (those are not accessible), but a
+  //      smooth ramped surface instead of a field of boxes.
+  const deckAt = new Map();     // "cx,cz" -> surface world Y
+  const roadCell = new Set();   // "cx,cz" that is a driveable deck (vs terrain)
+  for (const blk of (d.blocks || [])) {
+    const [x, y, z, dir, sx, sy, sz, ni] = blk;
+    const nm = names[ni] || '';
+    if (!isSurface(nm)) continue;
+    const road = isDeck(nm);
+    const ex = (dir % 2) ? sz : sx, ez = (dir % 2) ? sx : sz;
+    // road/platform: the DRIVING surface sits ~2m above the anchor cell floor
+    // (this is what env.routemodel's deck-snap uses). Terrain fill: its top
+    // IS its surface, so use the full bounding-box height.
+    const dyW = road ? (y - bh) * by + 2 : (y - bh + sy) * by;
+    for (let i = 0; i < ex; i++)
+      for (let j = 0; j < ez; j++) {
+        const k = (x + i) + ',' + (z + j);
+        if (!deckAt.has(k) || road) { deckAt.set(k, dyW); }
+        if (road) roadCell.add(k);
+      }
+  }
+  const ROAD_C = new THREE.Color(0xb5763b);
+  const TERR_C = new THREE.Color(0x53612f);
+  const pos = [], colr = [], idx = [];
+  const vmap = new Map();
+  // sub-divide every 32m cell into SUB x SUB, heights bilinearly interpolated
+  // from the four surrounding cell decks -> a smooth surface, not big facets
+  const SUB = 4;
+  const H = (cx, cz) => deckAt.get(cx + ',' + cz);
+  const vert = (fx, fz) => {              // fx,fz are FRACTIONAL cell coords
+    const k = fx.toFixed(3) + ',' + fz.toFixed(3);
+    let vi = vmap.get(k);
+    if (vi !== undefined) return vi;
+    const cx = Math.floor(fx), cz = Math.floor(fz);
+    const tx = fx - cx, tz = fz - cz;
+    const h00 = H(cx, cz), h10 = H(cx + 1, cz),
+          h01 = H(cx, cz + 1), h11 = H(cx + 1, cz + 1);
+    if (h00 == null || h10 == null || h01 == null || h11 == null) return -1;
+    const yv = h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz)
+             + h01 * (1 - tx) * tz + h11 * tx * tz;
+    vi = pos.length / 3;
+    pos.push(fx * bx, yv, fz * bz);
+    const c = TERR_C;
+    colr.push(c.r, c.g, c.b);
+    vmap.set(k, vi);
+    bb.expandByPoint(new THREE.Vector3(fx * bx, yv, fz * bz));
+    return vi;
+  };
+  for (const k of deckAt.keys()) {
+    const [cx, cz] = k.split(',').map(Number);
+    if (H(cx + 1, cz) == null || H(cx, cz + 1) == null || H(cx + 1, cz + 1) == null) continue;
+    const ys = [H(cx, cz), H(cx + 1, cz), H(cx, cz + 1), H(cx + 1, cz + 1)];
+    if (Math.max(...ys) - Math.min(...ys) > 45) continue;   // don't bridge a cliff
+    for (let si = 0; si < SUB; si++)
+      for (let sj = 0; sj < SUB; sj++) {
+        const x0 = cx + si / SUB, x1 = cx + (si + 1) / SUB;
+        const z0 = cz + sj / SUB, z1 = cz + (sj + 1) / SUB;
+        const a = vert(x0, z0), b = vert(x1, z0),
+              c2 = vert(x0, z1), dd = vert(x1, z1);
+        if (a < 0 || b < 0 || c2 < 0 || dd < 0) continue;
+        idx.push(a, c2, b, b, c2, dd);
+      }
+  }
+  if (idx.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    world.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      vertexColors: true })));
+  }
+
+  // scenery / structure blocks stay as dim translucent boxes for context
+  const sceneBoxes = [];
+  for (const blk of (d.blocks || [])) {
+    const [x, y, z, dir, sx, sy, sz, ni] = blk;
+    if (isSurface(names[ni] || '')) continue;
+    const ex = (dir % 2) ? sz : sx, ez = (dir % 2) ? sx : sz;
+    sceneBoxes.push([(x + ex / 2) * bx, (y - bh + sy / 2) * by, (z + ez / 2) * bz,
+                     ex * bx, sy * by, ez * bz]);
+  }
+  if (sceneBoxes.length) {
+    const mesh = new THREE.InstancedMesh(box,
+      new THREE.MeshLambertMaterial({ color: 0x252a33, transparent: true, opacity: 0.22 }),
+      sceneBoxes.length);
+    sceneBoxes.forEach(([cx, cy, cz, w, h, dp], i) => {
+      tmp.position.set(cx, cy, cz);
+      tmp.quaternion.identity();
+      tmp.scale.set(Math.max(w, 1), Math.max(h, 1), Math.max(dp, 1));
+      tmp.updateMatrix();
+      mesh.setMatrixAt(i, tmp.matrix);
+    });
+    mesh.renderOrder = -1;
+    world.add(mesh);
+  }
+
+  // ---- PROCEDURAL ROAD: a ribbon swept along the (correct, deck-snapped)
+  //      reference line, with width / surface / bank taken from the nearest
+  //      block's NAME at each point. Real piece meshes are not accessible,
+  //      but name + footprint + the line give a road that curves, ramps and
+  //      banks like the real thing.
+  // the server's spliced line is coarse (~1 pt per patch segment); resample it
+  // smoothly so the road ribbon and racing line are not faceted
+  let line = d.line || [];
+  if (line.length > 3) {
+    const cv = new THREE.CatmullRomCurve3(
+      line.map(p => new THREE.Vector3(p[0], p[1], p[2])));
+    let len = 0;
+    for (let i = 1; i < line.length; i++)
+      len += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1],
+                        line[i][2] - line[i - 1][2]);
+    const n = Math.max(60, Math.min(1500, Math.round(len / 4)));
+    line = cv.getSpacedPoints(n).map(v => [v.x, v.y, v.z]);
+    d.line = line;      // downstream (racing-line tube, jump slices) reuse it
+  }
+  // spatial lookup: nearest drivable block name for a world XZ
+  const drv = [];
+  for (const blk of (d.blocks || [])) {
+    const [x, y, z, dir, sx, sy, sz, ni] = blk;
+    const nm = names[ni] || '';
+    const s = nm.toLowerCase();
+    if (!(s.startsWith('road') || s.startsWith('platformdirt'))) continue;
+    const ex = (dir % 2) ? sz : sx, ez = (dir % 2) ? sx : sz;
+    drv.push({ nm: s, cx: (x + ex / 2) * bx, cz: (z + ez / 2) * bz });
+  }
+  const nearBlock = (x, z) => {
+    let best = null, bd = Infinity;
+    for (const b of drv) {
+      const dd = (b.cx - x) ** 2 + (b.cz - z) ** 2;
+      if (dd < bd) { bd = dd; best = b; }
+    }
+    return (best && bd < 4000 * 4000) ? best.nm : '';
+  };
+  const roadColour = nm =>
+    nm.startsWith('roadtech') ? 0x9297a0 :
+    nm.startsWith('platform') ? 0xd9b26a :
+    nm.includes('ice') ? 0xbfe4ef : 0xa9713e;   // dirt default
+  const roadWidth = nm =>
+    nm.includes('narrow') ? 9 :
+    nm.startsWith('platform') ? 18 : 13;         // half-width, metres
+
+  if (line.length > 2) {
+    const P = line.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    const rp = [], rc = [], ri = [];
+    const T = new THREE.Vector3(), N = new THREE.Vector3(), UPV = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < P.length; i++) {
+      const a = P[Math.max(0, i - 1)], b = P[Math.min(P.length - 1, i + 1)];
+      T.subVectors(b, a).normalize();
+      N.crossVectors(UPV, T).normalize();            // road right vector (flat)
+      const nm = nearBlock(P[i].x, P[i].z);
+      const hw = roadWidth(nm);
+      // bank on Tilt pieces: roll the cross-section into the local turn
+      let roll = 0;
+      if (nm.includes('tilt')) {
+        const c = P[Math.min(P.length - 1, i + 2)], pv = P[Math.max(0, i - 2)];
+        const t1 = new THREE.Vector3().subVectors(P[i], pv).normalize();
+        const t2 = new THREE.Vector3().subVectors(c, P[i]).normalize();
+        const turn = t1.x * t2.z - t1.z * t2.x;      // signed curvature
+        roll = Math.max(-0.45, Math.min(0.45, -turn * 12));
+      }
+      const dy = Math.sin(roll) * hw;
+      const L = new THREE.Vector3(P[i].x - N.x * hw, P[i].y + 0.4 - (roll > 0 ? dy : 0), P[i].z - N.z * hw);
+      const R = new THREE.Vector3(P[i].x + N.x * hw, P[i].y + 0.4 + (roll < 0 ? -dy : 0), P[i].z + N.z * hw);
+      if (roll) { L.y = P[i].y + 0.4 - dy * 0.5 * Math.sign(roll); R.y = P[i].y + 0.4 + dy * 0.5 * Math.sign(roll); }
+      const col = new THREE.Color(roadColour(nm));
+      rp.push(L.x, L.y, L.z, R.x, R.y, R.z);
+      rc.push(col.r, col.g, col.b, col.r, col.g, col.b);
+      bb.expandByPoint(L); bb.expandByPoint(R);
+      if (i > 0) {
+        const v = (i - 1) * 2;
+        ri.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
+      }
+    }
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute('position', new THREE.Float32BufferAttribute(rp, 3));
+    rg.setAttribute('color', new THREE.Float32BufferAttribute(rc, 3));
+    rg.setIndex(ri);
+    rg.computeVertexNormals();
+    world.add(new THREE.Mesh(rg, new THREE.MeshLambertMaterial({
+      vertexColors: true, side: THREE.DoubleSide })));
+  }
+
+  // thin racing line on top of the road ribbon
+  const L = (d.line || []).map(p => new THREE.Vector3(p[0], p[1] + 1.2, p[2]));
+  if (L.length > 1) {
+    const curve = new THREE.CatmullRomCurve3(L);
+    const tube = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, Math.min(L.length * 2, 2000), 0.9, 6, false),
+      new THREE.MeshBasicMaterial({ color: 0x36e0c8 }));
+    tube.renderOrder = 2;
+    world.add(tube);
+    L.forEach(v => bb.expandByPoint(v));
+  }
+
+  // jump spans, drawn thick + red over the line
+  for (const j of (d.jumps || [])) {
+    const a = nearestLine(d.line, j[0], j[1]);
+    const b = nearestLine(d.line, j[2], j[3]);
+    if (a && b) {
+      const seg = sliceLine(d.line, a, b).map(p => new THREE.Vector3(p[0], p[1] + 1.6, p[2]));
+      if (seg.length > 1) {
+        world.add(new THREE.Mesh(
+          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(seg), seg.length * 2, 3.2, 8, false),
+          new THREE.MeshBasicMaterial({ color: 0xff5555 })));
+      }
+    }
+  }
+
+  // gantry frames over the start / finish / checkpoint pieces
+  const GANTRY = /^road\w*(start|finish|checkpoint)\d*$/;   // NOT SlopeStart / SlopeEnd
+  for (const blk of (d.blocks || [])) {
+    const [x, y, z, dir, sx, sy, sz, ni] = blk;
+    const s = (names[ni] || '').toLowerCase();
+    if (!GANTRY.test(s)) continue;
+    const ex = (dir % 2) ? sz : sx, ez = (dir % 2) ? sx : sz;
+    const cxw = (x + ex / 2) * bx, czw = (z + ez / 2) * bz;
+    const cyw = (y - bh) * by + 1;
+    const col = s.includes('finish') ? 0xff5555 : s.includes('checkpoint') ? 0xf5a623 : 0x3fb950;
+    const mat = new THREE.MeshBasicMaterial({ color: col });
+    const along = (dir % 2) ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+    const post = new THREE.BoxGeometry(2.5, 22, 2.5);
+    for (const sgn of [-1, 1]) {
+      const p = new THREE.Mesh(post, mat);
+      p.position.set(cxw + along.x * sgn * 15, cyw + 11, czw + along.z * sgn * 15);
+      world.add(p);
+    }
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(
+      (dir % 2) ? 3 : 33, 3, (dir % 2) ? 33 : 3), mat);
+    beam.position.set(cxw, cyw + 22, czw);
+    world.add(beam);
+  }
+
+  // landmarks
+  const ball = (p, col, r) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 16),
+      new THREE.MeshBasicMaterial({ color: col }));
+    m.position.set(p[0], p[1] + r, p[2]); world.add(m);
+    bb.expandByPoint(m.position);
+  };
+  // a gate = a ring standing across the road, oriented to the line's tangent
+  const gate = (p, col) => {
+    const li = nearestLine(d.line, p[0], p[2]);
+    let ang = 0;
+    if (li != null && d.line.length > 2) {
+      const a = d.line[Math.max(0, li - 1)], b = d.line[Math.min(d.line.length - 1, li + 1)];
+      ang = Math.atan2(b[0] - a[0], b[2] - a[2]);
+    }
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(13, 1.1, 8, 28),
+      new THREE.MeshBasicMaterial({ color: col }));
+    ring.position.set(p[0], p[1] + 12, p[2]);
+    ring.rotation.y = ang;            // face along the road
+    ring.rotation.x = Math.PI / 2;
+    ring.renderOrder = 4;
+    world.add(ring);
+    bb.expandByPoint(ring.position);
+  };
+  (d.checkpoints || []).forEach(c => gate(c, 0xf5a623));
+  if (d.finish) gate(d.finish, 0xff5555);
+  if (d.spawn) ball(d.spawn, 0x3fb950, 6);
+  for (const mk of (d.marks || [])) {
+    ball(mk.pos, 0x22d3ee, 3.5);
+    makeLabel(mk.name, mk.pos);
+  }
+
+  // ground grid at the lowest deck
+  const grid = new THREE.GridHelper(6000, 60, 0x223, 0x152030);
+  grid.position.y = bb.min.y - 4;
+  world.add(grid);
+
+  // fit camera
+  if (!bb.isEmpty()) {
+    bb.getCenter(target);
+    dist = bb.getSize(new THREE.Vector3()).length() * 0.55;
+    yaw = 0.7; pitch = 0.85;
+    applyCam();
+  }
+  hud(d);
+}
+
+function nearestLine(line, x, z) {
+  let bi = -1, bd = Infinity;
+  (line || []).forEach((p, i) => {
+    const dd = (p[0] - x) ** 2 + (p[2] - z) ** 2;
+    if (dd < bd) { bd = dd; bi = i; }
+  });
+  return bi < 0 ? null : bi;
+}
+function sliceLine(line, a, b) {
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  return line.slice(lo, hi + 1);
+}
+
+const labels = [];
+function makeLabel(text, pos) {
+  const cv2 = document.createElement('canvas');
+  cv2.width = 256; cv2.height = 64;
+  const g = cv2.getContext('2d');
+  g.font = '28px ui-monospace, monospace';
+  g.fillStyle = '#22d3ee';
+  g.fillText(text, 6, 40);
+  const tex = new THREE.CanvasTexture(cv2);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  sp.scale.set(60, 15, 1);
+  sp.position.set(pos[0], pos[1] + 12, pos[2]);
+  world.add(sp);
+}
+
+function hud(d) {
+  document.getElementById('hud').innerHTML =
+    `<b>${d.map || '?'}</b><br>` +
+    `<span class="k">blocks</span> ${(d.blocks || []).length}  ` +
+    `<span class="k">line pts</span> ${(d.line || []).length}  ` +
+    `<span class="k">CPs</span> ${(d.checkpoints || []).length}  ` +
+    `<span class="k">jumps</span> ${(d.jumps || []).length}  ` +
+    `<span class="k">marks</span> ${(d.marks || []).length}<br>` +
+    `<span class="k">drag</span> orbit &nbsp; <span class="k">shift/right-drag</span> pan &nbsp; <span class="k">wheel</span> zoom`;
+  document.getElementById('legend').innerHTML = LEGEND.map(([t, c]) =>
+    `<div><i style="background:#${c.toString(16).padStart(6, '0')}"></i>${t}</div>`).join('') +
+    `<div><i style="background:#36e0c8"></i>reference line</div>` +
+    `<div><i style="background:#ff5555"></i>jump span / finish</div>` +
+    `<div><i style="background:#3fb950"></i>spawn</div>` +
+    `<div><i style="background:#22d3ee"></i>named mark</div>`;
+}
+
+async function reload() {
+  try {
+    const m = Q.get('map') || '';
+    const r = await fetch('/api/route3d' + (m ? '?map=' + encodeURIComponent(m) : ''),
+      { cache: 'no-store' });
+    const d = await r.json();
+    if (!d.ok || !(d.blocks || []).length) {
+      document.getElementById('err').textContent =
+        d.err || 'no occupancy for this map — load it in-game / run a training pass';
+      return;
+    }
+    build(d);
+  } catch (e) {
+    document.getElementById('err').textContent = 'load failed: ' + e;
+  }
+}
+
+// ---- live cars + trace history --------------------------------------------
+const SEAT_COL = [0x36e0c8, 0xf5a623, 0xa371f7, 0xff7b72];
+let carMeshes = [];
+let traceGroup = new THREE.Group();
+scene.add(traceGroup);
+
+function ensureCars() {
+  if (carMeshes.length) return;
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(9, 4, 16),
+      new THREE.MeshBasicMaterial({ color: SEAT_COL[i], depthTest: false }));
+    m.renderOrder = 6;
+    m.visible = false;
+    scene.add(m);
+    carMeshes.push(m);
+  }
+}
+
+async function pollCars() {
+  try {
+    const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    const ps = (s.latest || {}).players || [];
+    ensureCars();
+    for (let i = 0; i < 4; i++) {
+      const p = ps[i];
+      if (p && p.pos && (p.pos[0] || p.pos[2])) {
+        carMeshes[i].position.set(p.pos[0], p.pos[1] + 2, p.pos[2]);
+        carMeshes[i].visible = true;
+      } else {
+        carMeshes[i].visible = false;
+      }
+    }
+  } catch (e) { /* trainer not up */ }
+}
+
+async function loadTraces() {
+  try {
+    const m = Q.get('map') || '';
+    const r = await (await fetch('/api/route3d/traces?n=200' + (m ? '&map=' + encodeURIComponent(m) : ''),
+      { cache: 'no-store' })).json();
+    scene.remove(traceGroup);
+    traceGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    traceGroup = new THREE.Group();
+    scene.add(traceGroup);
+    for (const [seat, polys] of Object.entries(r.seats || {})) {
+      const col = SEAT_COL[(+seat) % 4];
+      // cap per seat so N thin tubes stay cheap; newest first from the API
+      polys.slice(0, 60).forEach((poly, idx) => {
+        if (poly.length < 2) return;
+        const pts = poly.map(p => new THREE.Vector3(p[0], p[1] + 1.6, p[2]));
+        const a = Math.max(0.05, 0.55 * (1 - idx / 60));
+        // LineBasicMaterial.linewidth is ignored in WebGL, so draw a thin tube
+        const tube = new THREE.Mesh(
+          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),
+            Math.min(pts.length * 2, 120), 1.1, 5, false),
+          new THREE.MeshBasicMaterial({ color: col, transparent: true,
+            opacity: a, depthWrite: false }));
+        tube.renderOrder = 8;
+        traceGroup.add(tube);
+      });
+    }
+  } catch (e) { /* no traces yet */ }
+}
+
+let acc = 0;
+function tick(t) {
+  requestAnimationFrame(tick);
+  renderer.render(scene, camera);
+}
+applyCam();
+tick();
+reload();
+loadTraces();
+pollCars();
+setInterval(() => { if (AUTO) reload(); }, 8000);
+setInterval(() => { if (AUTO) loadTraces(); }, 25000);
+setInterval(pollCars, 300);
+</script>
+</body>
+</html>

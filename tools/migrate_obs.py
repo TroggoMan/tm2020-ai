@@ -97,6 +97,37 @@ def main():
             torch.save(sd, buf)
             blobs[name] = buf.getvalue()
 
+    # Adam's momentum buffers mirror the shape of the parameters they track,
+    # and they live NESTED inside optimizer["state"][param_index], where the
+    # loop above never looks. Leaving them at the old width crashes on the
+    # first gradient step with
+    #
+    #   RuntimeError: The size of tensor a (122) must match the size of
+    #                 tensor b (144) at non-singleton dimension 1
+    #
+    # ...which is exactly what happened the first time this ran.
+    #
+    # They are CLEARED rather than widened. Adam re-initialises them lazily on
+    # the first step, and exp_avg / exp_avg_sq are short-horizon statistics
+    # (beta 0.9 / 0.999) - a few hundred steps of readaptation. Widening them
+    # by hand means inventing second-moment estimates for columns that have
+    # never had a gradient, which is a worse guess than starting clean.
+    # param_groups is preserved, so the learning rate and betas survive.
+    for name in list(blobs):
+        if not name.endswith(".optimizer.pth"):
+            continue
+        import io
+        sd = torch.load(io.BytesIO(blobs[name]), map_location="cpu",
+                        weights_only=False)
+        if isinstance(sd, dict) and sd.get("state"):
+            n_cleared = len(sd["state"])
+            sd["state"] = {}
+            buf = io.BytesIO()
+            torch.save(sd, buf)
+            blobs[name] = buf.getvalue()
+            changed.append(f"{name}  cleared Adam state for {n_cleared} params "
+                           f"(re-initialised lazily; param_groups kept)")
+
     if not changed:
         sys.exit(f"nothing to widen - no 2-D weight had {a.old_obs} or "
                  f"{a.old_obs + ACT_DIM} input columns. Is this model already "

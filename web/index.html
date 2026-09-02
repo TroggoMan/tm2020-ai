@@ -292,7 +292,9 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <label>line</label>
       <select id="lineSel" onchange="checkLine()"></select>
       <label>steps</label>
-      <input type="number" id="steps" value="200000" min="1000" style="max-width:130px">
+      <input type="number" id="steps" value="5000000" min="1000" step="100000" style="max-width:130px"
+             title="Total env steps for the whole run. Must be WELL above the warm-up length below - the warm-up counts toward this budget. 5M is a long explore run.">
+      <span class="hint" style="margin:0" id="stepsHint"></span>
       <label title="Which model file to train. Pick an existing one from the list, or type a new name to start a fresh model without touching the old one. Blank = stage default (sac_explore / sac_tm_v2).">model</label>
       <input type="text" id="trName" placeholder="stage default" list="modelList"
              style="max-width:150px" onchange="loadModelSettings()">
@@ -301,10 +303,13 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
         style="min-width:auto" onchange="resumeChanged()"> resume</label>
       <button class="go" id="trStart" onclick="trainStart()">Start</button>
       <button class="stop" id="trStop" onclick="post('/api/train/stop')">Stop</button>
+      <button id="trLoadRunning" onclick="loadRunningArgs()"
+        title="Fill this form with the settings the RUNNING trainer is actually using (parsed from its command line). Works even for a run started outside the panel.">&#8635; load running settings</button>
+      <span class="hint" id="trRunHint" style="margin:0"></span>
     </div>
     <div class="row">
       <label title="metres off the reference line before the episode ends">off-line</label>
-      <input type="number" id="tMaxOffset" value="30" step="1" style="max-width:80px">
+      <input type="number" id="tMaxOffset" value="250" step="10" style="max-width:80px">
       <label title="m/s below which the car counts as not moving">stuck m/s</label>
       <input type="number" id="tStuckSpeed" value="1.0" step="0.1" style="max-width:80px">
       <label title="seconds below that speed before the episode ends">stuck s</label>
@@ -347,10 +352,38 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <input type="number" id="trGradSteps" value="2" step="1" min="1" style="max-width:70px" placeholder="auto">
       <label title="Mirror every checkpoint and new best to this shared 'general driver' path so the next run/stage/track starts from the best brain so far. Blank = don't.">promote to</label>
       <input type="text" id="trPromote" value="models/driver.zip" style="max-width:150px" placeholder="none">
-      <label title="Warm-start a FRESH run from this .zip (weights only, empty buffer, no scripted warm-up). Ignored when resume finds a local checkpoint. Blank = random init.">init from</label>
-      <input type="text" id="trInitFrom" placeholder="e.g. models/driver.zip" style="max-width:170px">
+      <label title="Warm-start a FRESH run from this .zip (weights only, empty buffer). Ignored when resume finds a local checkpoint. Blank = random init. Lists models/ and every archive snapshot.">init from</label>
+      <select id="trInitFrom" style="max-width:260px">
+        <option value="">— random init —</option>
+      </select>
       <label title="Pin the checkpoint sequence, e.g. 0,1,3,4,2. Overrides the nearest-neighbour guess. Pair with cp_strict_order so the car is always aimed at the NEXT checkpoint, not the closest. Blank = auto.">gate order</label>
       <input type="text" id="trGateOrder" placeholder="auto" style="max-width:110px">
+    </div>
+    <div class="row">
+      <label title="Transitions collected by the scripted warm-up driver (and the reward/hints) BEFORE SAC's first gradient step. A floor, not a schedule - you cannot extend it once passed. Minutes shown assume 4 seats at 20Hz (80 transitions/s).">warm-up length</label>
+      <select id="trLearnStarts" style="max-width:180px">
+        <option value="2000">25 s (SB3 default)</option>
+        <option value="20000">~4 min</option>
+        <option value="48000">~10 min</option>
+        <option value="96000">~20 min</option>
+        <option value="200000" selected>~42 min</option>
+        <option value="360000">~75 min</option>
+      </select>
+      <label title="Fraction of the warm-up left as uniform-random actions instead of the scripted driver, so the buffer keeps some alternatives to compare good driving against. 0.1-0.25 is sensible; lower it when seeding one hard behaviour.">warm-up noise</label>
+      <input type="number" id="trBootstrapRandom" value="0.15" step="0.05" min="0" max="1" style="max-width:70px">
+      <label title="Replay buffer capacity in transitions. Must be big enough to still hold the run's GOOD episodes - at 300k a long run ages out every finish it ever had. ~1KB each, so 2,000,000 is about 2GB RAM.">buffer</label>
+      <select id="trBufferSize" style="max-width:120px">
+        <option value="500000">500k</option>
+        <option value="1000000">1M</option>
+        <option value="2000000" selected>2M</option>
+        <option value="4000000">4M</option>
+      </select>
+      <label title="Seconds between rollback snapshots written to models/archive/&lt;name&gt;/. Smaller = more restore points, more disk.">snapshot every</label>
+      <select id="trArchiveEvery" style="max-width:110px">
+        <option value="300">5 min</option>
+        <option value="600" selected>10 min</option>
+        <option value="1800">30 min</option>
+      </select>
     </div>
     <div class="row">
       <label title="Explore only. Stop after this many finishes with no further improvement, build the racer's line from the best run, and hand over. 0 runs explore forever.">hand over after</label>
@@ -375,6 +408,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
         <option value="250">250 without a best</option>
       </select>
       <label class="toggle" title="After handover, start the race stage automatically with the line it just built"><input type="checkbox" id="trThenRace" checked> then race</label>
+      <label class="toggle" title="Sector curriculum: drill start-&gt;CP1, then CP1-&gt;CP2, ... one section at a time, then the whole lap, then repeat. Carries through the handover into the racer."><input type="checkbox" id="trCurriculum"> curriculum</label>
       <label class="toggle" title="On a sustained fall in return, restore the best snapshot in place. Off by default: a rollback during a deliberate exploration burst, or while the buffer is still mixed after a reward change, throws away progress you wanted."><input type="checkbox" id="trRollback"> auto-rollback</label>
     </div>
     <div id="fleetRows"></div>
@@ -427,7 +461,9 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
   </section>
 
   <section class="wide">
-    <h2>Route editor</h2>
+    <h2>Route editor
+      <a href="/route3d" target="_blank" style="font-size:12px;font-weight:normal;
+         margin-left:10px;color:#36e0c8">open 3D view &#8599;</a></h2>
     <canvas id="route" width="1040" height="560"
             style="width:100%;display:block;background:#070a0e;
                    border:1px solid var(--line);border-radius:9px;
@@ -437,6 +473,13 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <button id="rtPatch" onclick="RE.setMode('patch')">New patch</button>
       <button id="rtDrag" onclick="RE.setMode('drag')">Move points</button>
       <button id="rtDel" onclick="RE.setMode('del')">Delete points</button>
+      <button id="rtMark" onclick="RE.setMode('marker')"
+              title="Click the line to place a reward marker; click an existing one to remove it">Markers</button>
+      <button id="rtNamedMark" onclick="RE.setMode('mark')"
+              title="Click the map to drop a NAMED mark (mark_from / mark_to for hints). Prompts for a name. Works with the trainer running.">+ Mark</button>
+      <input id="rtBonus" type="number" value="200" step="50" style="width:70px"
+             title="reward for reaching the marker">
+      <button onclick="RE.trails={};RE.draw()" title="wipe the car traces">Clear traces</button>
       <label class="toggle"><input type="checkbox" id="rtJump"
         onchange="RE.kind=this.checked?'jump':'road'"> draw as jump</label>
       <span style="flex:1"></span>
@@ -831,6 +874,45 @@ function renderFleet() {
       twice. Create those by hand, once each.</div>` : '');
 }
 
+// Pull the RUNNING trainer's real settings (from its /proc cmdline) into the
+// launch form. The form otherwise only shows "what to launch next" from
+// localStorage + a couple of model-meta fields, so a run started on the CLI
+// (or with flags the form has no field for) was invisible.
+async function loadRunningArgs() {
+  let j;
+  try { j = await (await fetch('/api/train/args', { cache: 'no-store' })).json(); }
+  catch { return; }
+  const h = $('trRunHint');
+  if (!j.running) { if (h) h.textContent = 'no trainer running'; return; }
+  const A = j.args || {};
+  const setV = (id, v) => { const e = $(id); if (e && v != null && v !== '') {
+    if (e.tagName === 'SELECT') {
+      if ([...e.options].some(o => o.value === String(v))) e.value = String(v);
+    } else e.value = v;
+  }};
+  const setC = (id, v) => { const e = $(id); if (e) e.checked = !!v; };
+  setV('stageSel', A.stage); if (typeof stageChanged === 'function') stageChanged();
+  setV('lineSel', A.line);
+  setV('steps', A.steps); setV('trName', A.name);
+  setV('trControlHz', A.control_hz); setV('trGradSteps', A.gradient_steps);
+  setV('trPromote', A.promote_to); setV('trInitFrom', A.init_from);
+  setV('trGateOrder', A.gate_order);
+  setV('trLearnStarts', A.learning_starts); setV('trBootstrapRandom', A.bootstrap_random);
+  setV('trBufferSize', A.buffer_size); setV('trArchiveEvery', A.archive_every);
+  setV('trInstances', A.instances); setV('trBootstrap', A.bootstrap);
+  setV('trSeats', A.seats); setV('trHandover', A.handover);
+  setV('trPatience', A.handover_patience);
+  setC('trThenRace', A.then_race); setC('trCurriculum', A.curriculum);
+  setC('trRollback', A.auto_rollback);
+  setC('resume', A.resume);
+  setV('tMaxOffset', A.max_offset); setV('tStuckSpeed', A.stuck_speed);
+  setV('tStuckSecs', A.stuck_seconds); setV('tEpCap', A.max_episode_s);
+  setV('tWeave', A.w_weave); setV('tReversal', A.w_reversal);
+  setV('tCpRadius', A.cp_radius);
+  if (h) h.innerHTML = `loaded pid <b>${j.pid}</b>'s settings into the form`;
+  if (typeof savePrefs === 'function') savePrefs();
+}
+
 async function trainStart() {
   const stage = $('stageSel').value;
   const line = $('lineSel').value;
@@ -845,6 +927,10 @@ async function trainStart() {
     promote_to: ($('trPromote').value || '').trim(),
     init_from: ($('trInitFrom').value || '').trim(),
     gate_order: ($('trGateOrder').value || '').trim(),
+    learning_starts:+$('trLearnStarts').value,
+    bootstrap_random:+$('trBootstrapRandom').value,
+    buffer_size:+$('trBufferSize').value,
+    archive_every:+$('trArchiveEvery').value,
     max_offset:+$('tMaxOffset').value, stuck_speed:+$('tStuckSpeed').value,
     stuck_seconds:+$('tStuckSecs').value, max_episode_s:+$('tEpCap').value,
     w_weave:+$('tWeave').value, w_reversal:+$('tReversal').value,
@@ -854,6 +940,7 @@ async function trainStart() {
     handover:+$('trHandover').value,
     handover_patience:+$('trPatience').value,
     then_race:$('trThenRace').checked,
+    curriculum:$('trCurriculum').checked,
     auto_rollback:$('trRollback').checked,
   });
   if (!r.ok) {
@@ -1167,6 +1254,28 @@ function drawPath(s) {
     ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fill();
   }
 
+  // Reward markers. Drawn as a DIAMOND so they cannot be mistaken for a
+  // checkpoint ring or the finish dot - they are not gates, they are hand
+  // placed bonuses, and confusing the two would make the map lie about what
+  // the track requires. Labelled with the distance the reward compares
+  // against, since that is the number in the config.
+  for (const m of (LINEMETA.markers || [])) {
+    if (!m.xz) continue;
+    const q = T(m.xz);
+    ctx.save();
+    ctx.translate(q[0], q[1]);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = 'rgba(255,200,87,.9)';
+    ctx.strokeStyle = '#0a0c10';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.rect(-4.5, -4.5, 9, 9); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,200,87,.95)';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.fillText(`+${Math.round(m.bonus)} @${Math.round(m.s)}m`,
+                 q[0] + 7, q[1] + 3);
+  }
+
   // The SEAT's car, not the camera's. In splitscreen the top-level record is
   // whichever car the camera is on, and between seats it carries no position
   // at all - so the trail reported "no car" about a game with four of them.
@@ -1214,6 +1323,8 @@ function drawPath(s) {
         : '') +
       `<b>white</b> car · <b style="color:#e3b341">amber</b> the 6 lookahead ` +
       `points it is fed · <b style="color:#4dd4ac">rings</b> checkpoints` +
+      ((LINEMETA.markers || []).length
+        ? ` · <b style="color:#ffc857">diamonds</b> reward markers` : '') +
       (GHOST ? ` · <b style="color:#a371f7">violet line</b> saved run` : '');
   } else {
     TRAIL = [];
@@ -1489,7 +1600,17 @@ const FIELD = {
   'reward.w_gas':          ['throttle bonus', 0.005, 'Per step with the throttle down. This is the "just accelerate" prior — the thing a person tries first that uniform-random exploration almost never produces.'],
   'reward.w_accel':        ['acceleration bonus', 0.01, 'Per m/s actually gained. Pays for the RESULT rather than the pedal, so holding the throttle against a wall earns the throttle bonus and not this one.'],
   'reward.w_both_pedals':  ['both-pedals penalty', 0.01, 'Charged when gas and brake are both down. Physically just slow, but a common local optimum for a binary throttle.'],
-  'speedslide.w':          ['slide reward', 0.01, "Per step, times a 0-1 score that peaks across SDHelper's green band (19-22km/h sideways on road above 400km/h) and tapers to nothing at the orange edges."],
+  'reward.w_jump_speed':   ['jump run-up bonus', 0.1, 'Per step in the run-up before a JUMP patch, scaled 0-1 by approach speed against the target below. A jump patch already stops the off-surface / off-line / airtime penalties firing over the gap; this pays for carrying speed INTO the take-off, which is otherwise only learned by falling short. 0 = off.'],
+  'reward.jump_approach_m':['jump run-up length (m)', 1, 'How many metres before each take-off the run-up bonus applies.'],
+  'reward.jump_target_kmh':['jump run-up target (km/h)', 1, 'Approach speed at which the run-up bonus is paid in full; below it the bonus scales down linearly.'],
+  'speedslide.w':          ['green slide reward', 0.5, "Per step at FULL GREEN (before the streak multiplier). This is the number that decides whether slides matter to the run - a 2s green corner is ~40 steps, so w=3 there is +120ish, ~half a checkpoint, before the streak bonus. Between the orange edges and green it ramps up, shaped by the exponent below."],
+  'speedslide.w_any':      ['any-slide floor', 0.1, "Per step for ANY real slide (orange and up), before ramping toward the green reward. 'Any speedslide beats no speedslide.' Keep it a fraction of the green reward."],
+  'speedslide.gamma':      ['ramp shape', 0.1, "Exponent on the 0-1 band score. >1 is convex: yellow is worth little, the reward climbs steeply into green. 2.5 default. 1 = linear."],
+  'speedslide.streak_gain':['stay-in-green gain', 0.1, "How hard STAYING in green is rewarded. The green reward is multiplied by 1 + gain*ln(1+consecutive_green_steps), so a held slide pays far more than a flick through green. 0 disables the streak bonus."],
+  'speedslide.streak_cap': ['stay-in-green cap', 0.5, "Ceiling on the streak multiplier so a very long slide cannot run away. 4 = green can pay up to 4x its base."],
+  'speedslide.stall_steps': ['stall cutoff (steps)', 1, "The slide reward pays nothing after this many control steps with no new ground reached. Stops a stuck car farming the reward by slide-brake-slide in place. 15 = 0.75s at 20Hz."],
+  'speedslide.accel_floor': ['flat-slide fraction', 0.05, "What a slide that only HOLDS speed pays, as a fraction of full. A slide that bleeds speed pays 0; one that accelerates ramps up to full. 0.15 default."],
+  'speedslide.accel_gain': ['accel scaling', 0.5, "How fast the reward ramps to full as the slide accelerates. Multiplies smoothed dv (m/s per step). 3 = a steady ~1.7m/s^2 gain reaches full."],
   'speedslide.w_blue':     ['not-sliding penalty', 0.01, "Per step when the car is fast enough to be sliding usefully and isn't - SDHelper's blue. Leave at 0 until the reward above is working on its own."],
   'speedslide.speed_floor_kmh': ['speed floor override (km/h)', 10, "0 means use SDHelper's own per-surface floor: 400km/h on road, 200 on grass and dirt. Set it to test a slide reward on a car that cannot reach 400 yet."],
   'action.binary_gas':     ['throttle on/off', 1, 'Threshold the throttle to fully on or fully off. TM2020\u2019s throttle is a switch in practice and the fast line is nearly always one of the two ends, so a continuous pedal just hands the optimiser a continuum of slower options. 1 on, 0 off.'],
@@ -1523,41 +1644,33 @@ function getPath(obj, path) {
   return path.split('.').reduce((o, k) => (o || {})[k], obj);
 }
 
-let TUNE_PROFILE_TOUCHED = false;
-function profileChanged() { TUNE_PROFILE_TOUCHED = true; loadConfig(); }
+function profileChanged() { loadConfig(); }
 
 async function loadConfig(keepMap) {
   const want = keepMap || $('tuneMap').value;
-  // Until the user touches the stage dropdown, the server picks the profile
-  // the running trainer is on; after that, the dropdown wins.
-  // The stage dropdown is authoritative once the page has settled - it always
-  // has a value (explore/race), so always ask for that file. Before the first
-  // load, TUNE_PROFILE_TOUCHED is false and we let the server pick the stage
-  // the running trainer is on, which then sets the dropdown.
-  const prof = $('tuneProfile') ? $('tuneProfile').value : '';
+  // The stage dropdown ALWAYS wins and is ALWAYS sent. It defaults to
+  // "explore" and is remembered across refreshes, so the panel never
+  // silently flips to the other file when the trainer starts or stops -
+  // which is exactly what made edits look like they "didn't take".
+  const prof = ($('tuneProfile') && $('tuneProfile').value) || 'explore';
   let j;
   try {
-    const qs = [];
+    const qs = ['profile=' + encodeURIComponent(prof)];
     if (want) qs.push('map=' + encodeURIComponent(want));
-    if (prof && (TUNE_PROFILE_TOUCHED || CONFIG_META))
-      qs.push('profile=' + encodeURIComponent(prof));
-    j = await (await fetch('/api/config' + (qs.length ? '?' + qs.join('&') : ''))).json();
+    j = await (await fetch('/api/config?' + qs.join('&'))).json();
   } catch { return; }
   CONFIG_META = j;
   CONFIG = j.config;
-  // Reflect the profile actually loaded (from the trainer, or the query).
-  if ($('tuneProfile') && !TUNE_PROFILE_TOUCHED)
-    $('tuneProfile').value = (j.profile === 'race') ? 'race' : 'explore';
   if ($('tuneSaveAs') && j.config_file)
     $('tuneSaveAs').placeholder = j.config_file.replace(/\.json$/, '');
   // Explore and race keep separate files per map. Saying which one is on
   // screen is the difference between "my surface weights do nothing" and
   // "I am editing the other stage".
   if ($('tuneFile')) {
+    const runs = CONFIG_META && CONFIG_META.live_map ? '' : '';
     $('tuneFile').innerHTML = j.config_file
-      ? `editing <code>${esc(j.config_file)}</code>`
-        + (j.profile ? ` &mdash; the <b>${esc(j.stage)}</b> stage, which is `
-                       + `what the running trainer reads` : '')
+      ? `<b style="color:#e3b341">editing ${esc(j.config_file)}</b>`
+        + ` — markers &amp; marks are edited in the route editor, not here`
       : '';
   }
   TUNE_DIRTY = false;
@@ -1958,10 +2071,16 @@ async function saveConfig() {
   // the file we write - <map>.explore.json or <map>.race.json. A running
   // trainer on that stage stat()s the file and hot-reloads within a second.
   const profile = $('tuneProfile') ? $('tuneProfile').value : 'explore';
-  const r = await post('/api/config', {map, config: CONFIG, profile});
+  // markers / marks have their OWN editors (the route editor). Never send
+  // them from here - a stale copy would overwrite fresher route-editor work.
+  // The server merges what we DO send over the file already on disk.
+  const payload = JSON.parse(JSON.stringify(CONFIG));
+  delete payload.markers;
+  delete payload.marks;
+  const r = await post('/api/config', {map, config: payload, profile});
   if (!r.ok) { $('tuneStatus').innerHTML = `<span class="warn">${esc(r.err)}</span>`; return; }
   TUNE_DIRTY = false;
-  $('tuneStatus').textContent = 'saved — a running trainer picks this up within a second';
+  $('tuneStatus').textContent = `saved to ${map}.${profile}.json — hot-reloads within a second`;
   setTimeout(() => { if (!TUNE_DIRTY) $('tuneStatus').textContent = ''; }, 6000);
 }
 
@@ -2074,6 +2193,26 @@ async function loadArchive() {
     sel.innerHTML = (j.models || []).map(m => `<option>${esc(m)}</option>`).join('');
     if ((j.models || []).includes(keep)) sel.value = keep;
   }
+  // Populate the "init from" dropdown: models/, then every archive snapshot.
+  const ifs = $('trInitFrom');
+  if (ifs) {
+    const arch = j.archive || {};
+    const sig2 = JSON.stringify([j.models, Object.entries(arch)
+      .map(([k, v]) => [k, (v || []).map(r => r.name)])]);
+    if (ifs.dataset.sig !== sig2) {
+      const cur = ifs.value;
+      let html = '<option value="">— random init —</option>';
+      for (const m of (j.models || []))
+        html += `<option value="models/${esc(m)}.zip">models/${esc(m)}.zip</option>`;
+      for (const [m, rows] of Object.entries(arch))
+        for (const r of (rows || []))
+          html += `<option value="models/archive/${esc(m)}/${esc(r.name)}.zip">`
+                + `archive/${esc(m)}/${esc(r.name)}</option>`;
+      ifs.innerHTML = html;
+      ifs.value = cur;              // keep the selection across a refresh
+      ifs.dataset.sig = sig2;
+    }
+  }
   renderArchive();
 }
 
@@ -2135,8 +2274,11 @@ async function loadRuns() {
 // ---------------------------------------------------------------------------
 const REMEMBER = ['stageSel', 'lineSel', 'trInstances', 'trSeats', 'trName',
                   'trBootstrap', 'trHandover', 'trPatience', 'trThenRace',
-                  'trRollback', 'padSeat', 'tMaxOffset', 'tStuckSpeed',
-                  'tStuckSecs', 'tEpCap', 'tWeave', 'tReversal', 'tCpRadius'];
+                  'trRollback', 'trCurriculum', 'padSeat', 'tMaxOffset', 'tStuckSpeed',
+                  'tStuckSecs', 'tEpCap', 'tWeave', 'tReversal', 'tCpRadius',
+                  'trLearnStarts', 'trBootstrapRandom', 'trBufferSize',
+                  'trArchiveEvery', 'trControlHz', 'trGradSteps', 'trPromote',
+                  'trInitFrom', 'trGateOrder', 'tuneProfile'];
 const PREFS_KEY = 'tmai.launch.v1';
 
 function savePrefs() {
@@ -2257,8 +2399,13 @@ const RE = {
       this.fit();
       const bits = [j.source || 'none'];
       if (j.note) bits.push(j.note);
-      this.hint(bits.join('  ·  ') +
-        (this.patches.length ? ('  ·  ' + this.patches.length + ' patch(es)') : ''));
+      if (this.patches.length) bits.push(this.patches.length + ' patch(es)');
+      if ((j.markers || []).length)
+        bits.push((j.markers).length + ' ◆ reward marker(s)');
+      if ((j.marks || []).length)
+        bits.push((j.marks).length + ' ○ named mark(s): '
+                  + j.marks.map(m => m.name).join(', '));
+      this.hint(bits.join('  ·  '));
     } catch (e) { this.hint('route load failed'); }
   },
 
@@ -2335,6 +2482,30 @@ const RE = {
   onDown(e) {
     if (!this.data) return;
     const [px, py] = this.ptr(e);
+    if (this.mode === 'mark') {
+      const [wx, wz] = this.inv(px, py);
+      this.placeMark(wx, wz);
+      return;
+    }
+    if (this.mode === 'marker') {
+      const [wx, wz] = this.inv(px, py);
+      const marks = (this.data.markers || []).slice();
+      // Click ON an existing marker removes it; anywhere else adds one. One
+      // mode, both operations - a separate "delete marker" button would be a
+      // fourth mode to remember for no gain.
+      let hit = -1, hd = 1e18;
+      marks.forEach((m, i) => {
+        if (!m.xz) return;
+        const d = Math.hypot(m.xz[0] - wx, m.xz[1] - wz);
+        if (d < hd) { hd = d; hit = i; }
+      });
+      const near = 12 / Math.max(this.view.scale, 1e-6);   // ~12 screen px
+      if (hit >= 0 && hd <= near) marks.splice(hit, 1);
+      else marks.push({xz: [wx, wz],
+                       bonus: +(document.getElementById('rtBonus') || {}).value || 200});
+      this.saveMarkers(marks);
+      return;
+    }
     if (e.button === 2 || this.mode === 'del') {
       const hit = this.pickPatchPoint(px, py);
       if (hit) {
@@ -2403,12 +2574,42 @@ const RE = {
   setMode(m) {
     this.mode = m;
     if (m !== 'patch') this.closeDraft(true);
-    for (const [id, mm] of [['rtPatch', 'patch'], ['rtDrag', 'drag'], ['rtDel', 'del']]) {
+    for (const [id, mm] of [['rtPatch', 'patch'], ['rtDrag', 'drag'], ['rtDel', 'del'], ['rtMark', 'marker'], ['rtNamedMark', 'mark']]) {
       const b = document.getElementById(id);
       if (b) b.style.outline = mm === m ? '2px solid #3fb950' : 'none';
     }
-    this.cv.style.cursor = m === 'patch' ? 'crosshair'
+    this.cv.style.cursor = (m === 'patch' || m === 'marker' || m === 'mark') ? 'crosshair'
       : m === 'del' ? 'not-allowed' : 'grab';
+  },
+
+  async placeMark(wx, wz) {
+    const name = (prompt('Name this mark (e.g. jump_runup):') || '').trim();
+    if (!name) return;
+    const r = await post('/api/mark', {name, xz: [wx, wz], map: this.data.map});
+    if (!r || !r.ok) { alert('mark failed: ' + ((r && r.err) || '?')); return; }
+    await this.load();          // redraw with the new mark
+    if (typeof loadConfig === 'function') loadConfig();   // refresh the marks list
+  },
+
+  // Markers save IMMEDIATELY rather than waiting for "Save edits". They are
+  // hot-reloaded by a running trainer, so a marker that is placed but not
+  // saved is a lie on screen - and the button next to it saves route patches,
+  // which are a different thing entirely.
+  async saveMarkers(marks) {
+    if (!this.data) return;
+    const body = {map: this.data.map,
+                  markers: marks.map(m => (m.s !== undefined && m.xz === undefined)
+                    ? {s: m.s, bonus: m.bonus}
+                    : {xz: m.xz, bonus: m.bonus})};
+    try {
+      const r = await (await fetch('/api/route/markers', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)})).json();
+      if (!r.ok) { alert('marker save failed: ' + (r.err || '?')); return; }
+      // Re-read so the drawn positions come from the server's own
+      // distance-along-line resolution, not the raw click.
+      await this.load(this.data.map);
+    } catch (ex) { alert('marker save failed: ' + ex); }
   },
 
   async save() {
@@ -2424,7 +2625,14 @@ const RE = {
     } catch (e) { this.hint('save failed'); }
   },
 
-  revert() { this.patches = []; this.draft = null; this.save(); this.draw(); },
+  revert() {
+    if (this.patches.length &&
+        !confirm(`Delete all ${this.patches.length} patch(es)? `
+                 + `The last non-empty version is kept as `
+                 + `maps/${this.data ? this.data.map : ''}.route_edits.json.bak`))
+      return;
+    this.patches = []; this.draft = null; this.save(); this.draw();
+  },
 
   hint(t) { const h = document.getElementById('rtHint'); if (h) h.textContent = t; },
 
@@ -2483,9 +2691,120 @@ const RE = {
     });
     if (this.data.spawn) mark(this.data.spawn, '#3b82f6', 7);
     if (this.data.finish) mark(this.data.finish, '#ef4444', 7, true);
+
+    // LIVE CARS on the editor's own map.
+    //
+    // The point is comparison: this canvas draws the line the AI is being
+    // rewarded against, so putting the real cars on the SAME axes is the only
+    // way to see the two disagree. A route that is subtly wrong looks perfectly
+    // plausible on its own.
+    //
+    // Manual driving is coloured differently on purpose. When no trainer is
+    // running the car is you, and "where am I really" versus "where does the
+    // model think the track is" is exactly the question being asked - so the
+    // two cases must not look alike.
+    const manual = !RE.trainerRunning;
+    (RE.cars || []).forEach((c, i) => {
+      const trail = (RE.trails || {})[c.slot] || [];
+      if (trail.length > 1) {
+        ctx.beginPath();
+        let pen = false;
+        for (let k = 0; k < trail.length; k++) {
+          const pt = trail[k];
+          if (!pt) { pen = false; continue; }   // teleport break
+          const q = this.T(pt[0], pt[1]);
+          if (!pen) { ctx.moveTo(q[0], q[1]); pen = true; }
+          else ctx.lineTo(q[0], q[1]);
+        }
+        ctx.strokeStyle = manual ? 'rgba(255,110,199,.85)'
+                                 : 'rgba(77,212,172,.55)';
+        ctx.lineWidth = manual ? 2.5 : 1.5;
+        ctx.stroke();
+      }
+      const q = this.T(c.xz[0], c.xz[1]);
+      ctx.fillStyle = manual ? '#ff6ec7' : '#4dd4ac';
+      ctx.strokeStyle = '#0a0c10';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(q[0], q[1], manual ? 6 : 4.5, 0, 7);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = manual ? '#ff6ec7' : '#4dd4ac';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText(manual ? `YOU (seat ${c.slot})` : `s${c.slot}`,
+                   q[0] + 8, q[1] - 6);
+    });
+
+    // Reward markers, as DIAMONDS so they are never mistaken for a checkpoint
+    // dot or the finish square - they are hand-placed bonuses, not gates, and
+    // a map that implies otherwise is lying about what the track requires.
+    (this.data.markers || []).forEach(m => {
+      if (!m.xz) return;
+      const q = this.T(m.xz[0], m.xz[1]);
+      ctx.save();
+      ctx.translate(q[0], q[1]);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#ffc857';
+      ctx.strokeStyle = '#0a0c10';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.rect(-5, -5, 10, 10); ctx.fill(); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#ffc857';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText(`+${Math.round(m.bonus)}`, q[0] + 8, q[1] + 4);
+    });
+
+    // Named marks (mark_from / mark_to anchors for hints). Display only -
+    // placed by driving there or from the config, not on this canvas. Hollow
+    // teal ring + name, so they read as "a place I named", not a bonus.
+    (this.data.marks || []).forEach(m => {
+      if (!m.xz) return;
+      const q = this.T(m.xz[0], m.xz[1]);
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#22d3ee';
+      ctx.beginPath(); ctx.arc(q[0], q[1], 1.5, 0, 7); ctx.fill();
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText(m.name, q[0] + 8, q[1] - 5);
+    });
   },
 };
 RE.init();
+// Live car positions for the route editor, so the real track and the modelled
+// line can be compared on one set of axes. Kept here rather than reusing the
+// path view's TRAIL because that one follows a single selected seat, and the
+// question here is where ALL the cars are relative to the line.
+RE.cars = [];
+RE.trails = {};
+RE.trainerRunning = false;
+setInterval(async () => {
+  if (!RE.data) return;
+  try {
+    const s = await (await fetch('/api/status', {cache: 'no-store'})).json();
+    RE.trainerRunning = !!((s.trainer || {}).running);
+    const live = (s.latest || {}).map;
+    // Never plot cars from a DIFFERENT map onto this line - that would invent
+    // a disagreement rather than reveal one.
+    if (live && RE.data.map && live !== RE.data.map) { RE.cars = []; return; }
+    const players = ((s.latest || {}).players || []).filter(p => p.car && p.pos);
+    RE.cars = players.map(p => ({slot: p.slot, xz: [p.pos[0], p.pos[2]]}));
+    for (const c of RE.cars) {
+      const t = (RE.trails[c.slot] = RE.trails[c.slot] || []);
+      const last = t[t.length - 1];
+      if (!last) { t.push(c.xz); }
+      else {
+        const step = Math.hypot(last[0] - c.xz[0], last[1] - c.xz[1]);
+        // A respawn TELEPORTS the car. Joining the two samples draws a line
+        // across the map that the car never drove - and on a 500ms poll a
+        // legitimate step is at most ~15m at 110km/h, so anything past 30m is
+        // a warp, not travel. null breaks the polyline instead of connecting.
+        if (step > 30) { t.push(null); t.push(c.xz); }
+        else if (step > 1.5) { t.push(c.xz); }
+      }
+      while (t.length > 900) t.shift();
+    }
+    if (!RE.draft) RE.draw();
+  } catch (e) { /* panel not reachable; leave the last drawing alone */ }
+}, 500);
 // follow the game onto a new map (only when there are no unsaved patches)
 setInterval(() => {
   if (!RE.data || RE.draft) return;

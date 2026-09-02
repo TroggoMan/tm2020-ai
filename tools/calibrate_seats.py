@@ -125,12 +125,58 @@ def drive(pad_port: int, steer: float, gas: float = 0.0) -> None:
         _PADS.pop(pad_port, None)
 
 
+def press(pad_port: int, button: str = "b", hold_ms: int = 250) -> None:
+    """Send a button press to one pad (`press <button> <hold_ms>`)."""
+    sock = _pad(pad_port)
+    if sock is None:
+        return
+    try:
+        sock.sendall(f"press {button} {hold_ms}\n".encode())
+        sock.recv(64)
+    except OSError:
+        _PADS.pop(pad_port, None)
+
+
+def respawn_all(seats: int, sock, f, button: str = "b") -> None:
+    """Put every car back on the start line before measuring anything.
+
+    Calibration drives each pad at FULL LOCK AND FULL THROTTLE, which leaves
+    the cars scattered - and often wedged against a wall or dropped off the
+    track. A wedged car cannot move however correctly its pad is wired, so the
+    next run reads it as "this pad is not bound to a seat" and the whole
+    mapping is condemned on the strength of a car that was simply stuck.
+
+    Observed exactly that: a run measured clean identity, and the very next run
+    reported pads 1 and 3 driving nothing, because the first run's full-lock
+    test had beached those two cars.
+
+    Give-up is pressed on every pad rather than restarting the map, for the
+    same reason the env avoids RequestRestartMap: it is per-seat and cannot
+    disturb anything else.
+    """
+    for i in range(seats):
+        press(seat_ports(i, raw=True)["pad"], button)
+    # Let the respawn land, then wait for everything to be stationary.
+    time.sleep(1.5)
+    end = time.time() + 10.0
+    while time.time() < end:
+        fast = [p for p in read_players(sock, f)
+                if abs(float(p.get("speed") or 0.0)) > 0.5]
+        if not fast:
+            return
+        time.sleep(0.3)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seats", type=int, default=MAX_SEATS)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-save", action="store_true",
                     help="do not record the result for the panel to read")
+    ap.add_argument("--no-respawn", action="store_true",
+                    help="do not give-up/respawn the cars first. Only for a "
+                         "lobby you know is already on the start line - a "
+                         "beached car reads as an unbound pad.")
     ap.add_argument("--hold", type=float, default=2.5,
                     help="seconds to hold each pad at full lock and throttle")
     a = ap.parse_args()
@@ -144,13 +190,34 @@ def main() -> int:
     sock.settimeout(4.0)
     f = sock.makefile("rb")
 
+    # Everything back on the start line first - see respawn_all.
+    if not a.no_respawn:
+        print("resetting all cars to the start line before measuring…")
+        respawn_all(a.seats, sock, f)
+
     mapping: dict[int, int | None] = {}
     for pad_index in range(a.seats):
-        pad = seat_ports(pad_index)["pad"]
+        pad = seat_ports(pad_index, raw=True)["pad"]
         # Neutral first, so the previous pad's input is not still being read.
         for i in range(a.seats):
-            drive(seat_ports(i)["pad"], 0.0, 0.0)
-        time.sleep(0.5)
+            drive(seat_ports(i, raw=True)["pad"], 0.0, 0.0)
+        # ...and then WAIT FOR EVERYTHING TO ACTUALLY STOP, rather than
+        # sleeping a fixed half second. A car released from full throttle
+        # coasts for several seconds, and `dist` is cumulative - so the
+        # previous pad's car keeps racking up distance while the next pad is
+        # being tested, and can win the comparison below. That is exactly how
+        # this reported "two pads moved the same seat" on a lobby that was
+        # correctly configured: pad 3 moved car 3 by 1.2m while car 2 was
+        # still rolling from the pad 2 test.
+        if not a.no_respawn and pad_index:
+            respawn_all(a.seats, sock, f)
+        settle_end = time.time() + 8.0
+        while time.time() < settle_end:
+            fast = [p for p in read_players(sock, f)
+                    if abs(float(p.get("speed") or 0.0)) > 0.5]
+            if not fast:
+                break
+            time.sleep(0.3)
         base = {}
         for p in read_players(sock, f):
             base[p["slot"]] = (float(p.get("in_steer") or 0.0),
@@ -170,6 +237,7 @@ def main() -> int:
         drive(pad, 0.0, 0.0)
 
         best, best_score = None, 0.0
+        scores: dict[int, float] = {}
         for p in moved:
             slot = p.get("slot")
             b = base.get(slot, (0.0, 0.0, 0.0))
@@ -180,8 +248,22 @@ def main() -> int:
             # it is cumulative, so it survives the sample landing between
             # telemetry frames.
             score = max(d_steer / 0.05, d_dist / 0.25, d_speed / 0.25)
-            if score > 1.0 and score > best_score:
-                best, best_score = slot, score
+            if score > 1.0:
+                scores[slot] = max(scores.get(slot, 0.0), score)
+        # Winner must DOMINATE, not merely lead. An absolute threshold is the
+        # wrong test here: on the start line at full lock a car turns more than
+        # it travels, so the real answer can be a 1.2m delta - small, but the
+        # only thing moving. Requiring 3x the runner-up keeps that answer while
+        # refusing to guess when two cars both moved.
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+        if ranked:
+            best, best_score = ranked[0]
+            if len(ranked) > 1 and ranked[1][1] * 3.0 > best_score:
+                print(f"  ambiguous: car {best} scored {best_score:.1f} but "
+                      f"car {ranked[1][0]} scored {ranked[1][1]:.1f} - "
+                      f"letting the cars settle longer would help",
+                      file=sys.stderr)
+                best = None
         mapping[pad_index] = best
         if not a.json:
             where = (f"seat {best}" if best is not None
@@ -189,7 +271,7 @@ def main() -> int:
             print(f"pad {pad} -> {where}")
 
     for i in range(a.seats):
-        drive(seat_ports(i)["pad"], 0.0, 0.0)
+        drive(seat_ports(i, raw=True)["pad"], 0.0, 0.0)
     close_pads()
     f.close()
     sock.close()
@@ -216,9 +298,11 @@ def main() -> int:
               f"assign a controller to every seat before training - an "
               f"unbound seat spawns a car that answers to no input, and every "
               f"episode on it ends 'stuck'.")
+        return 2
     elif len(seats_hit) < len(bound):
         print("two pads moved the same seat - the game has not given each "
               "seat its own controller.")
+        return 2
     elif sorted(mapping) == sorted(k for k in mapping if mapping[k] == k):
         print("every pad drives its own seat. Nothing to configure.")
     else:
