@@ -178,9 +178,9 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
   <section>
     <h2>Game</h2>
     <div class="row">
-      <button onclick="cmd('restart')">Restart map</button>
-      <button onclick="cmd('menu')">Main menu</button>
-      <button onclick="cmd('ping')">Ping</button>
+      <button onclick="cmd('restart')" title="Reload the current map from the start.">Restart map</button>
+      <button onclick="cmd('menu')" title="Send the game back to the main menu.">Main menu</button>
+      <button onclick="cmd('ping')" title="Check the plugin command channel is answering.">Ping</button>
       <button onclick="window.open('/training','_blank')"
               title="TRAINING.md - how to run the two stages and tune them, step by step">Training guide</button>
       <button onclick="window.open('/tricks','_blank')"
@@ -192,11 +192,11 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     </div>
     <div class="row">
       <input type="text" id="tmx" placeholder="TMX map id, e.g. 12345">
-      <button onclick="playTmx()">Load map</button>
+      <button onclick="playTmx()" title="Load that map from trackmania.exchange by id.">Load map</button>
       <input id="markName" placeholder="mark name, e.g. before-the-jump"
              style="width:16em">
       <button onclick="markHere()"
-              title="Record where the car is right now under this name, so a hint can say mark_from/mark_to instead of an arc length you had to guess">Mark here</button>
+              title="Save the car's current spot under this name, for use as a hint's mark_from / mark_to.">Mark here</button>
     </div>
     <div class="row">
       <label>rate</label>
@@ -209,16 +209,16 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
 
   <section>
     <h2>Manual pad</h2>
-    <div class="row"><label>steer</label>
+    <div class="row"><label title="Steer the car by hand: -1 full left, +1 full right.">steer</label>
       <input type="range" id="steer" min="-1" max="1" step="0.01" value="0"
              oninput="pad()"><span id="steerV" class="k">0.00</span></div>
-    <div class="row"><label>gas</label>
+    <div class="row"><label title="Throttle by hand, 0 to 1.">gas</label>
       <input type="range" id="gas" min="0" max="1" step="0.01" value="0"
              oninput="pad()"><span id="gasV" class="k">0.00</span></div>
-    <div class="row"><label>brake</label>
+    <div class="row"><label title="Brake by hand, 0 to 1. Also reverses when stationary.">brake</label>
       <input type="range" id="brake" min="0" max="1" step="0.01" value="0"
              oninput="pad()"><span id="brakeV" class="k">0.00</span></div>
-    <div class="row"><button onclick="padReset()">Release all</button>
+    <div class="row"><button onclick="padReset()" title="Zero every pad axis.">Release all</button>
       <label style="min-width:auto">give-up btn</label>
       <select id="guBtn" style="max-width:80px">
         <option>y</option><option>x</option><option>b</option><option>a</option>
@@ -289,22 +289,22 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <span class="hint" id="stageHint" style="margin:0"></span>
     </div>
     <div class="row" id="lineRow">
-      <label>line</label>
+      <label title="Reference line the racer follows. Recorded or built by an explore run.">line</label>
       <select id="lineSel" onchange="checkLine()"></select>
       <label>steps</label>
       <input type="number" id="steps" value="5000000" min="1000" step="100000" style="max-width:130px"
-             title="Total env steps for the whole run. Must be WELL above the warm-up length below - the warm-up counts toward this budget. 5M is a long explore run.">
+             title="Total env steps for the run. Keep it well above the warm-up length below.">
       <span class="hint" style="margin:0" id="stepsHint"></span>
-      <label title="Which model file to train. Pick an existing one from the list, or type a new name to start a fresh model without touching the old one. Blank = stage default (sac_explore / sac_tm_v2).">model</label>
+      <label title="Model file to train. New name = fresh model. Blank = stage default.">model</label>
       <input type="text" id="trName" placeholder="stage default" list="modelList"
              style="max-width:150px" onchange="loadModelSettings()">
       <datalist id="modelList"></datalist>
-      <label style="min-width:auto" title="Continue an existing model AND its replay buffer. Untick to start from scratch - the old model is archived first, never deleted."><input type="checkbox" id="resume"
+      <label style="min-width:auto" title="Continue an existing model and its buffer. Untick to start fresh (old model archived first)."><input type="checkbox" id="resume"
         style="min-width:auto" onchange="resumeChanged()"> resume</label>
       <button class="go" id="trStart" onclick="trainStart()">Start</button>
       <button class="stop" id="trStop" onclick="post('/api/train/stop')">Stop</button>
       <button id="trLoadRunning" onclick="loadRunningArgs()"
-        title="Fill this form with the settings the RUNNING trainer is actually using (parsed from its command line). Works even for a run started outside the panel.">&#8635; load running settings</button>
+        title="Fill this form from the running trainer's actual command line.">&#8635; load running settings</button>
       <span class="hint" id="trRunHint" style="margin:0"></span>
     </div>
     <div class="row">
@@ -332,7 +332,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <select id="trInstances" onchange="renderFleet()" style="max-width:70px">
         <option>1</option><option>2</option><option>3</option><option>4</option>
       </select>
-      <label title="Drive N cars inside ONE splitscreen game instead of N separate games. The extra players are guests, so one account covers all of them. Overrides instances when above 1.">seats</label>
+      <label title="Drive N cars in one splitscreen game (guests, one account). Overrides instances when above 1.">seats</label>
       <select id="trSeats" style="max-width:70px">
         <option>1</option><option>2</option><option>3</option><option>4</option>
       </select>
@@ -346,21 +346,21 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <span class="hint" id="modelHint" style="margin:0"></span>
     </div>
     <div class="row">
-      <label title="Control loop rate. 20Hz gives each step a 50ms budget so the gradient work fits; 40Hz is the old default and made slip climb. Changing it invalidates a resumed buffer's timing.">control Hz</label>
+      <label title="Control loop rate. 20Hz gives each step a 50ms budget. Changing it invalidates a resumed buffer.">control Hz</label>
       <input type="number" id="trControlHz" value="20" step="5" min="5" style="max-width:70px">
-      <label title="SAC updates per control step. Auto (blank) re-picks a higher number as instances grow, which is what let slip return - 2 is the safe explicit value.">grad steps</label>
+      <label title="SAC gradient updates per control step. Blank = auto; 2 is the safe explicit value.">grad steps</label>
       <input type="number" id="trGradSteps" value="2" step="1" min="1" style="max-width:70px" placeholder="auto">
-      <label title="Mirror every checkpoint and new best to this shared 'general driver' path so the next run/stage/track starts from the best brain so far. Blank = don't.">promote to</label>
+      <label title="Also copy every checkpoint and new best to this shared path. Blank = off.">promote to</label>
       <input type="text" id="trPromote" value="models/driver.zip" style="max-width:150px" placeholder="none">
-      <label title="Warm-start a FRESH run from this .zip (weights only, empty buffer). Ignored when resume finds a local checkpoint. Blank = random init. Lists models/ and every archive snapshot.">init from</label>
+      <label title="Warm-start a fresh run from this .zip (weights only). Blank = random init.">init from</label>
       <select id="trInitFrom" style="max-width:260px">
         <option value="">— random init —</option>
       </select>
-      <label title="Pin the checkpoint sequence, e.g. 0,1,3,4,2. Overrides the nearest-neighbour guess. Pair with cp_strict_order so the car is always aimed at the NEXT checkpoint, not the closest. Blank = auto.">gate order</label>
+      <label title="Pin the checkpoint order, e.g. 0,1,3,4,2. Blank = auto (nearest-neighbour guess).">gate order</label>
       <input type="text" id="trGateOrder" placeholder="auto" style="max-width:110px">
     </div>
     <div class="row">
-      <label title="Transitions collected by the scripted warm-up driver (and the reward/hints) BEFORE SAC's first gradient step. A floor, not a schedule - you cannot extend it once passed. Minutes shown assume 4 seats at 20Hz (80 transitions/s).">warm-up length</label>
+      <label title="Transitions collected before SAC's first gradient step. A floor, not a schedule.">warm-up length</label>
       <select id="trLearnStarts" style="max-width:180px">
         <option value="2000">25 s (SB3 default)</option>
         <option value="20000">~4 min</option>
@@ -369,16 +369,16 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
         <option value="200000" selected>~42 min</option>
         <option value="360000">~75 min</option>
       </select>
-      <label title="Fraction of the warm-up left as uniform-random actions instead of the scripted driver, so the buffer keeps some alternatives to compare good driving against. 0.1-0.25 is sensible; lower it when seeding one hard behaviour.">warm-up noise</label>
+      <label title="Fraction of the warm-up left as random actions instead of the scripted driver. 0.1-0.25 is sensible.">warm-up noise</label>
       <input type="number" id="trBootstrapRandom" value="0.15" step="0.05" min="0" max="1" style="max-width:70px">
-      <label title="Replay buffer capacity in transitions. Must be big enough to still hold the run's GOOD episodes - at 300k a long run ages out every finish it ever had. ~1KB each, so 2,000,000 is about 2GB RAM.">buffer</label>
+      <label title="Replay buffer capacity in transitions. ~1KB each, so 2M is about 2GB RAM.">buffer</label>
       <select id="trBufferSize" style="max-width:120px">
         <option value="500000">500k</option>
         <option value="1000000">1M</option>
         <option value="2000000" selected>2M</option>
         <option value="4000000">4M</option>
       </select>
-      <label title="Seconds between rollback snapshots written to models/archive/&lt;name&gt;/. Smaller = more restore points, more disk.">snapshot every</label>
+      <label title="Seconds between rollback snapshots. Smaller = more restore points, more disk.">snapshot every</label>
       <select id="trArchiveEvery" style="max-width:110px">
         <option value="300">5 min</option>
         <option value="600" selected>10 min</option>
@@ -386,7 +386,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       </select>
     </div>
     <div class="row">
-      <label title="Explore only. Stop after this many finishes with no further improvement, build the racer's line from the best run, and hand over. 0 runs explore forever.">hand over after</label>
+      <label title="Explore only: hand over to the racer after this many finishes without improvement. 0 = never.">hand over after</label>
       <select id="trHandover" style="max-width:170px">
         <option value="0" selected>never (run forever)</option>
         <option value="1">1 finish</option>
@@ -399,7 +399,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
         <option value="250">250 finishes</option>
         <option value="500">500 finishes</option>
       </select>
-      <label title="Finishes with no new best time before it accepts the track is learned. Both conditions have to hold: 'finished N times' alone can be a fluke it cannot repeat, and 'stopped improving' alone would fire on a track it has never completed.">then wait</label>
+      <label title="Finishes with no new best time before the track counts as learned.">then wait</label>
       <select id="trPatience" style="max-width:170px">
         <option value="10">10 without a best</option>
         <option value="25" selected>25 without a best</option>
@@ -408,22 +408,14 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
         <option value="250">250 without a best</option>
       </select>
       <label class="toggle" title="After handover, start the race stage automatically with the line it just built"><input type="checkbox" id="trThenRace" checked> then race</label>
-      <label class="toggle" title="Sector curriculum: drill start-&gt;CP1, then CP1-&gt;CP2, ... one section at a time, then the whole lap, then repeat. Carries through the handover into the racer."><input type="checkbox" id="trCurriculum"> curriculum</label>
-      <label class="toggle" title="On a sustained fall in return, restore the best snapshot in place. Off by default: a rollback during a deliberate exploration burst, or while the buffer is still mixed after a reward change, throws away progress you wanted."><input type="checkbox" id="trRollback"> auto-rollback</label>
+      <label class="toggle" title="Drill one section at a time (start-&gt;CP1, CP1-&gt;CP2, ...) then the whole lap, then repeat."><input type="checkbox" id="trCurriculum"> curriculum</label>
+      <label class="toggle" title="On a sustained fall in return, restore the best snapshot. Off by default."><input type="checkbox" id="trRollback"> auto-rollback</label>
     </div>
     <div id="fleetRows"></div>
     <div class="grp">splitscreen seats</div>
-    <div class="hint">Four cars inside <em>one</em> game. The extra players are
-      guests, so one account drives all of them &mdash; and local multiplayer is
-      the only way a Starter Access account can start a map off local disk at
-      all.
-      <p><strong>The pad link is the one to watch.</strong> A seat can have a
-      car, be in Playing, and still answer to nothing. It cannot be settled by
-      watching either &mdash; a car that has moved was driven by <em>something</em>,
-      not necessarily by us &mdash; so it has to be tested by moving each pad
-      and seeing which seat responds. An untested seat that turns out to be
-      unbound ends every episode &lsquo;stuck&rsquo;, which reads exactly like
-      a policy that cannot drive.</p></div>
+    <div class="hint">Four cars inside <em>one</em> game, on one account.
+      Test pad links below &mdash; an unbound seat ends every episode
+      &lsquo;stuck&rsquo;, which looks exactly like a policy that cannot drive.</div>
     <div class="row">
       <button onclick="calibrateSeats()">Test pad links</button>
       <span class="hint" id="calibStatus" style="margin:0"></span>
@@ -435,7 +427,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
   <section>
     <h2>Controller</h2>
     <div class="row">
-      <label title="Which splitscreen seat this view is about. The top-level telemetry describes whichever car the CAMERA is on, so comparing it against seat 0's pad reports a permanent disagreement that is only the two halves being about different cars.">seat</label>
+      <label title="Which splitscreen seat this view is about.">seat</label>
       <select id="padSeat" onchange="tick()" style="max-width:70px">
         <option value="0">0</option><option value="1">1</option>
         <option value="2">2</option><option value="3">3</option>
@@ -452,9 +444,9 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
             style="width:100%;display:block;background:#080b10;
                    border:1px solid var(--line);border-radius:9px"></canvas>
     <div class="row" style="margin-top:10px">
-      <select id="traceSel" style="max-width:230px"></select>
-      <button id="traceBtn" onclick="toggleGhost()">Show</button>
-      <label class="toggle" id="heatTog"><input type="checkbox"
+      <select id="traceSel" style="max-width:230px" title="Pick a saved run to overlay on the path."></select>
+      <button id="traceBtn" onclick="toggleGhost()" title="Draw the selected run as a ghost trail.">Show</button>
+      <label class="toggle" id="heatTog" title="Overlay every recorded run as a heatmap."><input type="checkbox"
         onchange="HEAT=this.checked"> all runs</label>
     </div>
     <div class="hint" id="pathHint"></div>
@@ -469,10 +461,10 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
                    border:1px solid var(--line);border-radius:9px;
                    cursor:crosshair;touch-action:none"></canvas>
     <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
-      <button id="rtFit" onclick="RE.fit()">Fit</button>
-      <button id="rtPatch" onclick="RE.setMode('patch')">New patch</button>
-      <button id="rtDrag" onclick="RE.setMode('drag')">Move points</button>
-      <button id="rtDel" onclick="RE.setMode('del')">Delete points</button>
+      <button id="rtFit" onclick="RE.fit()" title="Zoom to fit the whole line.">Fit</button>
+      <button id="rtPatch" onclick="RE.setMode('patch')" title="Redraw a stretch of the line: click on, along, then back on it.">New patch</button>
+      <button id="rtDrag" onclick="RE.setMode('drag')" title="Drag individual line points.">Move points</button>
+      <button id="rtDel" onclick="RE.setMode('del')" title="Click points to delete them.">Delete points</button>
       <button id="rtMark" onclick="RE.setMode('marker')"
               title="Click the line to place a reward marker; click an existing one to remove it">Markers</button>
       <button id="rtNamedMark" onclick="RE.setMode('mark')"
@@ -480,11 +472,11 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <input id="rtBonus" type="number" value="200" step="50" style="width:70px"
              title="reward for reaching the marker">
       <button onclick="RE.trails={};RE.draw()" title="wipe the car traces">Clear traces</button>
-      <label class="toggle"><input type="checkbox" id="rtJump"
+      <label class="toggle" title="Mark the next patch as a JUMP gap: no off-line/airtime penalty across it."><input type="checkbox" id="rtJump"
         onchange="RE.kind=this.checked?'jump':'road'"> draw as jump</label>
       <span style="flex:1"></span>
-      <button id="rtSave" onclick="RE.save()">Save edits</button>
-      <button id="rtRevert" onclick="RE.revert()">Revert</button>
+      <button id="rtSave" onclick="RE.save()" title="Write the edited line back to disk; a running trainer picks it up.">Save edits</button>
+      <button id="rtRevert" onclick="RE.revert()" title="Discard unsaved line edits.">Revert</button>
     </div>
     <div class="hint" id="rtHint">click near the line to start a patch, click
       along the gap, click the line again to close it</div>
@@ -508,7 +500,7 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     <div class="row">
       <label>map</label>
       <select id="tuneMap" onchange="loadConfig()" style="max-width:280px"></select>
-      <label style="min-width:auto" title="Explore and race keep separate config files per map. This picks which one you are editing. Defaults to whatever the running trainer is reading.">stage</label>
+      <label style="min-width:auto" title="Explore and race keep separate config files per map. This picks which one you are editing.">stage</label>
       <select id="tuneProfile" onchange="profileChanged()" style="max-width:130px">
         <option value="explore">explore</option>
         <option value="race">race</option>
@@ -519,13 +511,13 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <span class="hint" id="tuneFile" style="margin:0"></span>
     </div>
     <div class="row">
-      <label style="min-width:auto" title="Write the current values to a different config file without touching the one you loaded. Name is the file basename as it appears in the map list, e.g. mytune.explore">save as</label>
+      <label style="min-width:auto" title="Save the current values to a different config file. Name is the basename, e.g. mytune.explore.">save as</label>
       <input type="text" id="tuneSaveAs" placeholder="e.g. mytune.explore" style="max-width:240px">
       <button onclick="saveConfigAs()">Save as new</button>
       <span class="hint" style="margin:0">creates a new file; the running trainer keeps reading its own</span>
     </div>
     <div class="row">
-      <label style="min-width:auto" title="Pick another map + stage. 'Load' pulls its values onto this screen (review, then Save). 'Copy to' writes the on-screen values out to it.">copy</label>
+      <label style="min-width:auto" title="Another map + stage: Load pulls its values here; Copy to writes the on-screen values to it.">copy</label>
       <select id="copyMap" style="max-width:240px"></select>
       <select id="copyStage" style="max-width:110px">
         <option value="race">race</option>
@@ -539,11 +531,10 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     <div class="tunegrid" id="tuneFields"></div>
 
     <div class="grp">sections &amp; hints</div>
-    <div class="hint">A hint says <em>where to try something, and for how
-      long</em>. The warm-up performs it and the reward pays a little for it,
-      so a behaviour random exploration would never stumble into gets a fair
-      trial. Scope it by checkpoint section, by a place you drove to, by speed,
-      or any combination. Forced gas/brake/steer apply to the warm-up only.</div>
+    <div class="hint">A hint marks <em>where to try something, and for how
+      long</em>: the warm-up performs it and the reward pays a little for it.
+      Scope by checkpoint section, a place you drove to, speed, or any mix.
+      Forced gas/brake/steer apply to the warm-up only.</div>
     <div id="hintList"></div>
     <div class="row">
       <button onclick="addHint()">+ hint</button>
@@ -563,11 +554,9 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
 
     <h2 style="margin-top:18px">Surfaces</h2>
     <div class="hint" style="margin:0 0 10px">
-      Per-wheel, per-step reward for whatever each tyre is touching. Negative
-      is a penalty. <b>End episode</b> is usually what you want for "stop
-      crashing into the barriers" — a large per-step penalty just drowns out
-      lap time and teaches it the reward is broken. Untick it later to let the
-      car get close to the edges again. Needs <b>surfaces</b> switched on above.
+      Per-wheel, per-step reward for whatever each tyre is touching; negative
+      is a penalty. Prefer <b>End episode</b> over a big penalty for "stop
+      crashing into the barriers". Needs <b>surfaces</b> switched on above.
     </div>
     <div class="surfgrid" id="tuneSurfaces"></div>
   </section>
@@ -1555,71 +1544,73 @@ function drawSpark() {
 // Fields are generated from whatever the config actually contains, so a knob
 // added to env/config.py shows up here without touching this file. The table
 // only supplies wording and step size.
+// Each entry: [label, number step (null = text), one short "what it does" line].
+// Keep help to one sentence; reasoning lives in README.md.
 const FIELD = {
-  'episode.max_episode_s': ['episode cap (s)', 1, 'Cut the episode off after this long. Shorter means more attempts per hour.'],
+  'episode.max_episode_s': ['episode cap (s)', 1, 'End the episode after this long.'],
   'reset.mode':            ['reset mode', null, 'giveup skips the ~8s intro. restart reloads the map.'],
   'reset.button':          ['give-up button', null, 'Pad button bound to Give up, used mid-run.'],
   'reset.finish_button':   ['finish button', null, 'Takes "Improve" on the finish screen. B does nothing there.'],
   'reset.hold_ms':         ['hold (ms)', 10, 'How long the button is held down.'],
-  'reset.settle_ms':       ['settle (ms)', 50, 'Wait before pressing after a run ends. Raise this if resets get missed — it grows on each retry.'],
+  'reset.settle_ms':       ['settle (ms)', 50, 'Wait before pressing after a run ends. Grows on each retry.'],
   'reset.retries':         ['retries', 1, 'Button attempts before paying for a full restart.'],
-  'reset.finish_fallback_after': ['improve after', 1, 'Give-up attempts on the finish screen before falling back to Improve. Improve always works but replays the ~8s intro, so it is the fallback, not the first try.'],
-  'reset.quick_timeout':   ['give-up wait (s)', 0.1, 'How long to wait for a give-up to land. A respawn is well under a second, so keep this short — failed attempts are cheap to retry.'],
-  'reset.finish_timeout':  ['improve wait (s)', 1, 'How long to wait after pressing Improve. Must exceed the intro (~8s) or the ladder retries on top of a reset that is already running.'],
+  'reset.finish_fallback_after': ['improve after', 1, 'Give-up attempts on the finish screen before falling back to Improve.'],
+  'reset.quick_timeout':   ['give-up wait (s)', 0.1, 'How long to wait for a give-up to land.'],
+  'reset.finish_timeout':  ['improve wait (s)', 1, 'How long to wait after pressing Improve (must exceed the ~8s intro).'],
   'reset.skip_intro':      ['skip intro', 1, 'Mash a button through the intro fly-in instead of sitting through it. 1 on, 0 off.'],
   'reset.skip_button':     ['skip button', null, 'Any button skips the intro; this is the one used.'],
   'reset.skip_interval_ms':['skip every (ms)', 25, 'How often to press while the intro is playing.'],
   // Stored in m/s to match the telemetry, but edited in km/h - that is the
   // unit on the speedo and on this panel, and mentally converting every time
   // is how you end up setting it 3.6x wrong.
-  'stuck.speed':           ['stuck below (km/h)', 0.5, 'Slower than this counts as not moving. Stored internally in m/s.', 3.6],
+  'stuck.speed':           ['stuck below (km/h)', 0.5, 'Slower than this counts as not moving.', 3.6],
   'stuck.seconds':         ['stuck for (s)', 0.5, 'How long it must stay that slow before the episode ends.'],
   'line.max_offset':       ['off-line limit (m)', 1, 'Metres from the reference line before the episode ends.'],
-  'line.soft_offset':      ['free corridor (m)', 1, 'How far it may stray from the reference line for free. This is distance from the line, NOT sliding — nothing here penalises drifting the car.'],
-  'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor. Raising this makes it copy your reference lap more closely, which also caps how much faster than you it can get. Widen the corridor instead if you want it to find its own line.'],
-  'line.cp_mode':          ['checkpoint test', null, 'gate = the car must CROSS THE PLANE of the checkpoint, inside its width and height, which is what the game itself requires. sphere = the old "be within N metres" test, which credited a checkpoint for driving past it on the road alongside.'],
-  'line.cp_half_width':    ['gate half-width (m)', 1, 'Half the checkpoint gate\u2019s width. A checkpoint block is 32m wide, so 16 is the block itself; a little slack costs nothing because the plane crossing is doing the real work.'],
-  'line.cp_height':        ['gate height (m)', 1, 'How far above or below the gate still counts. One grid level is 8m, so this stops a road stacked over the checkpoint collecting it from above.'],
-  'line.cp_radius':        ['checkpoint radius (m)', 1, 'Only used by the "sphere" test. How close counts as taking a checkpoint.'],
-  'reward.w_progress':     ['progress weight', 0.1, 'Reward per metre gained along the line. The main signal — leave at 1.'],
+  'line.soft_offset':      ['free corridor (m)', 1, 'How far it may stray from the line for free. Distance, not drift.'],
+  'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor.'],
+  'line.cp_mode':          ['checkpoint test', null, 'gate = must cross the checkpoint plane; sphere = be within N metres.'],
+  'line.cp_half_width':    ['gate half-width (m)', 1, 'Half the checkpoint gate width. The block is 32m wide.'],
+  'line.cp_height':        ['gate height (m)', 1, 'How far above or below the gate still counts.'],
+  'line.cp_radius':        ['checkpoint radius (m)', 1, 'Sphere test only: how close counts as taking a checkpoint.'],
+  'reward.w_progress':     ['progress weight', 0.1, 'Reward per metre gained along the line. The main signal.'],
   'reward.step_cost':      ['step cost', 0.005, 'Charged every step. This is what makes it want to be quick.'],
   'reward.finish_bonus':   ['finish bonus', 10, 'One-off for completing the track.'],
-  'reward.cp_bonus':     ['checkpoint bonus', 1, "Paid once for each checkpoint the first time it is taken - re-crossing pays nothing. Earns its place most in explore mode, where the line is provisional and progress along it can reward heading roughly the right way while the car misses the gate. Try about a quarter of the finish bonus."],
+  'reward.cp_bonus':     ['checkpoint bonus', 1, 'One-off the first time each checkpoint is taken. Try about a quarter of the finish bonus.'],
   'reward.off_line_penalty':['off-line penalty', 5, 'One-off when the episode ends off the line or on a killer surface.'],
   'reward.stuck_penalty':  ['stuck penalty', 5, 'One-off when the episode ends stuck.'],
-  'reward.w_weave':        ['weave penalty', 0.01, 'Per unit of steering change. Punishes brute-force twitching. Needs "weave" on.'],
-  'reward.w_reversal':     ['flip penalty', 0.01, 'Per full steering sign flip at speed. CAREFUL: a neoslide looks exactly like this from the outside, so raising it can train the technique out. Prefer the weave penalty.'],
-  'reward.w_turbo_use':    ['booster bonus', 0.01, 'Reward for throttle while on a booster. Carrot, not a rule — keep it small or it farms boosters instead of racing.'],
+  'reward.w_weave':        ['weave penalty', 0.01, 'Per unit of steering change. Needs "weave" on.'],
+  'reward.w_reversal':     ['flip penalty', 0.01, 'Per steering sign flip at speed. Can train out neoslides — prefer the weave penalty.'],
+  'reward.w_turbo_use':    ['booster bonus', 0.01, 'Reward for throttle while on a booster. Keep it small.'],
   'reward.w_air':          ['airtime penalty', 0.01, 'Per step with no wheel on the ground.'],
-  'reward.par_speed':      ['par speed (km/h)', 5, 'Break-even speed. Above 0 this replaces the flat step cost with one measured in the same units as progress, so driving at par earns nothing, faster earns and slower actively loses. For roughly a 2:1 progress-to-time ratio at a target speed, set this to half of it. 0 keeps the flat step cost.', 3.6],
-  'reward.charge_unused_time': ['charge unused time', 1, 'Charge a FAILED episode for the time it did not use. Without this a per-step time cost makes crashing profitable — dying at step 100 of 1800 saves 1700 steps of charge, worth far more than any crash penalty, so it learns to drive into the nearest wall. A finish is never charged. 1 on, 0 off.'],
-  'reward.w_gear':         ['gear bonus', 0.01, 'Per step, scaled by gear / top gear. Only paid once the gear has been HELD for the hold time below, so flip-flopping between two gears earns nothing at all and there is nothing to farm. Keep it small: gear is a proxy for speed and progress already pays for speed.'],
-  'reward.gear_hold_steps':['gear hold (steps)', 1, 'How long a gear must be held before it pays. This is the anti-flip-flop rule — 8 steps is 0.2s at 40Hz.'],
+  'reward.par_speed':      ['par speed (km/h)', 5, 'Break-even speed: above par earns, below par loses. 0 keeps the flat step cost.', 3.6],
+  'reward.charge_unused_time': ['charge unused time', 1, 'Charge a failed episode for time it did not use, so crashing early is not profitable. 1 on, 0 off.'],
+  'reward.w_gear':         ['gear bonus', 0.01, 'Per step, scaled by gear / top gear. Paid only after the gear is held (below).'],
+  'reward.gear_hold_steps':['gear hold (steps)', 1, 'How long a gear must be held before it pays. Anti-flip-flop.'],
   'reward.top_gear':       ['top gear', 1, 'Gear that counts as full marks.'],
-  'reward.w_downshift':    ['downshift penalty', 0.01, 'Charged for dropping a gear. Leave at 0 unless fighting a lift-off habit — downshifting is correct into a slow corner and punishing it teaches it not to brake.'],
-  'reward.w_gas':          ['throttle bonus', 0.005, 'Per step with the throttle down. This is the "just accelerate" prior — the thing a person tries first that uniform-random exploration almost never produces.'],
-  'reward.w_accel':        ['acceleration bonus', 0.01, 'Per m/s actually gained. Pays for the RESULT rather than the pedal, so holding the throttle against a wall earns the throttle bonus and not this one.'],
-  'reward.w_both_pedals':  ['both-pedals penalty', 0.01, 'Charged when gas and brake are both down. Physically just slow, but a common local optimum for a binary throttle.'],
-  'reward.w_jump_speed':   ['jump run-up bonus', 0.1, 'Per step in the run-up before a JUMP patch, scaled 0-1 by approach speed against the target below. A jump patch already stops the off-surface / off-line / airtime penalties firing over the gap; this pays for carrying speed INTO the take-off, which is otherwise only learned by falling short. 0 = off.'],
+  'reward.w_downshift':    ['downshift penalty', 0.01, 'Charged for dropping a gear. Leave at 0 unless fighting a lift-off habit.'],
+  'reward.w_gas':          ['throttle bonus', 0.005, 'Per step with the throttle down. The "just accelerate" prior.'],
+  'reward.w_accel':        ['acceleration bonus', 0.01, 'Per m/s actually gained. Pays for the result, not the pedal.'],
+  'reward.w_both_pedals':  ['both-pedals penalty', 0.01, 'Charged when gas and brake are both down.'],
+  'reward.w_jump_speed':   ['jump run-up bonus', 0.1, 'Per step in the run-up to a JUMP patch, scaled by approach speed. 0 = off.'],
   'reward.jump_approach_m':['jump run-up length (m)', 1, 'How many metres before each take-off the run-up bonus applies.'],
-  'reward.jump_target_kmh':['jump run-up target (km/h)', 1, 'Approach speed at which the run-up bonus is paid in full; below it the bonus scales down linearly.'],
-  'speedslide.w':          ['green slide reward', 0.5, "Per step at FULL GREEN (before the streak multiplier). This is the number that decides whether slides matter to the run - a 2s green corner is ~40 steps, so w=3 there is +120ish, ~half a checkpoint, before the streak bonus. Between the orange edges and green it ramps up, shaped by the exponent below."],
-  'speedslide.w_any':      ['any-slide floor', 0.1, "Per step for ANY real slide (orange and up), before ramping toward the green reward. 'Any speedslide beats no speedslide.' Keep it a fraction of the green reward."],
-  'speedslide.gamma':      ['ramp shape', 0.1, "Exponent on the 0-1 band score. >1 is convex: yellow is worth little, the reward climbs steeply into green. 2.5 default. 1 = linear."],
-  'speedslide.streak_gain':['stay-in-green gain', 0.1, "How hard STAYING in green is rewarded. The green reward is multiplied by 1 + gain*ln(1+consecutive_green_steps), so a held slide pays far more than a flick through green. 0 disables the streak bonus."],
-  'speedslide.streak_cap': ['stay-in-green cap', 0.5, "Ceiling on the streak multiplier so a very long slide cannot run away. 4 = green can pay up to 4x its base."],
-  'speedslide.stall_steps': ['stall cutoff (steps)', 1, "The slide reward pays nothing after this many control steps with no new ground reached. Stops a stuck car farming the reward by slide-brake-slide in place. 15 = 0.75s at 20Hz."],
-  'speedslide.accel_floor': ['flat-slide fraction', 0.05, "What a slide that only HOLDS speed pays, as a fraction of full. A slide that bleeds speed pays 0; one that accelerates ramps up to full. 0.15 default."],
-  'speedslide.accel_gain': ['accel scaling', 0.5, "How fast the reward ramps to full as the slide accelerates. Multiplies smoothed dv (m/s per step). 3 = a steady ~1.7m/s^2 gain reaches full."],
-  'speedslide.w_blue':     ['not-sliding penalty', 0.01, "Per step when the car is fast enough to be sliding usefully and isn't - SDHelper's blue. Leave at 0 until the reward above is working on its own."],
-  'speedslide.speed_floor_kmh': ['speed floor override (km/h)', 10, "0 means use SDHelper's own per-surface floor: 400km/h on road, 200 on grass and dirt. Set it to test a slide reward on a car that cannot reach 400 yet."],
-  'action.binary_gas':     ['throttle on/off', 1, 'Threshold the throttle to fully on or fully off. TM2020\u2019s throttle is a switch in practice and the fast line is nearly always one of the two ends, so a continuous pedal just hands the optimiser a continuum of slower options. 1 on, 0 off.'],
+  'reward.jump_target_kmh':['jump run-up target (km/h)', 1, 'Approach speed at which the run-up bonus pays in full.'],
+  'speedslide.w':          ['green slide reward', 0.5, 'Per step at full green, before the streak multiplier. The main slide reward.'],
+  'speedslide.w_any':      ['any-slide floor', 0.1, 'Per step for any real slide (orange and up). A fraction of the green reward.'],
+  'speedslide.gamma':      ['ramp shape', 0.1, 'Exponent on the band score. >1 climbs steeply into green; 1 = linear.'],
+  'speedslide.streak_gain':['stay-in-green gain', 0.1, 'How hard staying in green is rewarded. 0 disables the streak bonus.'],
+  'speedslide.streak_cap': ['stay-in-green cap', 0.5, 'Ceiling on the streak multiplier.'],
+  'speedslide.stall_steps': ['stall cutoff (steps)', 1, 'Slide reward stops after this many steps with no new ground reached.'],
+  'speedslide.accel_floor': ['flat-slide fraction', 0.05, 'What a speed-holding slide pays, as a fraction of full. Bleeding speed pays 0.'],
+  'speedslide.accel_gain': ['accel scaling', 0.5, 'How fast the reward ramps to full as the slide accelerates.'],
+  'speedslide.w_blue':     ['not-sliding penalty', 0.01, "Per step fast enough to slide usefully but not sliding. Leave at 0 first."],
+  'speedslide.speed_floor_kmh': ['speed floor override (km/h)', 10, "0 = use SDHelper's per-surface floor (400 road / 200 grass-dirt). Override to test slow."],
+  'action.binary_gas':     ['throttle on/off', 1, 'Threshold the throttle to fully on or fully off. 1 on, 0 off.'],
   'action.binary_brake':   ['brake on/off', 1, 'Same for the brake.'],
-  'action.gas_threshold':  ['throttle threshold', 0.05, 'Network output above this means throttle on. 0 is the middle of its range.'],
-  'action.brake_threshold':['brake threshold', 0.05, 'Network output above this means brake on. Must be BELOW 1.0 — the output is clipped to [-1,1], so 1.0 or higher switches the brake off entirely, and that also removes reverse (TM2020 reverses on the brake when stationary), so a car wedged on a wall can never back off. 0.7 keeps braking rare without disabling it.'],
-  'action.steer_levels':   ['steering notches', 1, 'Snap steering to fixed notches instead of a continuum. 10 = every 10%, like ten steering keys per side; 1 = {-1,0,+1} (pure keyboard); 0 = continuous. Measured on the continuous setting: the command changed sign between 41% of consecutive control steps and swung more than lock-to-lock on 22% — the car was sawing at the wheel 8 times a second and barely turning.'],
-  'action.steer_rate':     ['steering ramp (units/s)', 1, 'How fast the commanded steering may move, in units/s, where lock-to-lock is 2.0. 8.0 reaches full lock in about 125ms; 0 means no limit. This is per STAGE, not a schedule: the explorer is capped because a steady wheel finds the route better, and the racer runs at 0 because instant lock-to-lock flicks are part of TM technique. The racer starts from fresh weights at handover, so the limit is never pulled out from under a policy that learned with it.'],
-  'surface_grace_steps':   ['surface grace (steps)', 1, 'Wheels must stay on a killer surface this many steps before the episode ends. Stops a clipped kerb counting as a crash.'],
+  'action.gas_threshold':  ['throttle threshold', 0.05, 'Network output above this means throttle on. 0 is mid-range.'],
+  'action.brake_threshold':['brake threshold', 0.05, 'Network output above this means brake on. Must be below 1.0, or the brake (and reverse) switch off.'],
+  'action.steer_levels':   ['steering notches', 1, 'Snap steering to fixed notches. 10 = every 10%; 1 = keyboard; 0 = continuous.'],
+  'action.steer_rate':     ['steering ramp (units/s)', 1, 'Max steering speed (lock-to-lock is 2.0). 8.0 is full lock in ~125ms; 0 = no limit. Per stage.'],
+  'surface_grace_steps':   ['surface grace (steps)', 1, 'Wheels must stay on a killer surface this many steps before the episode ends.'],
 };
 
 const TOGGLE_HELP = {
@@ -1629,7 +1620,7 @@ const TOGGLE_HELP = {
   turbo_bonus: 'Apply the booster bonus.',
   gear: 'Apply the gear bonus and downshift penalty.',
   accel: 'Apply the throttle and acceleration bonuses.',
-  speedslide: "Grade slides against SDHelper's own band table. Does nothing below the surface's speed floor, so there is no point turning it on until the car is that quick.",
+  speedslide: "Grade slides against SDHelper's band table. Does nothing below the surface's speed floor.",
 };
 
 let CONFIG = null, CONFIG_META = null, TUNE_DIRTY = false;
