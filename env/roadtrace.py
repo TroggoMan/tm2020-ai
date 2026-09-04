@@ -107,12 +107,22 @@ def _has_sides(name: str) -> bool:
 
 
 # family -> (is_cp, is_start, is_finish, half_width_m)
+#
+# Start/finish are matched by a loose "<track family> ... Start|Finish" rule,
+# not just "^RoadTechStart". The platform sets name their end pieces
+# PlatformIceStart / PlatformDirtFinish / etc., and without these the walk
+# found no start block, returned nothing, and the whole map got "barriered
+# everywhere" with no roadtrace - which is exactly the Ice-platform failure.
+_TRACK_ROOT = r"(?:RoadTech|RoadDirt|RoadIce|RoadBump|RoadWater|Road\w*|" \
+              r"Platform\w*|Track\w*|DirtRoad\w*)"
 _FAM = [
-    (re.compile(r"Checkpoint", re.I),        (True,  False, False, 6.0)),
-    (re.compile(r"^RoadTechStart", re.I),    (False, True,  False, 6.0)),
-    (re.compile(r"^RoadTechFinish", re.I),   (False, False, True,  6.0)),
-    (re.compile(r"Platform", re.I),          (False, False, False, 8.0)),
-    (re.compile(r"Road", re.I),              (False, False, False, 6.0)),
+    (re.compile(r"Checkpoint", re.I),                       (True,  False, False, 6.0)),
+    (re.compile(_TRACK_ROOT + r".*Start", re.I),            (False, True,  False, 8.0)),
+    (re.compile(_TRACK_ROOT + r".*Finish", re.I),           (False, False, True,  8.0)),
+    (re.compile(r"^RoadTechStart", re.I),                   (False, True,  False, 6.0)),
+    (re.compile(r"^RoadTechFinish", re.I),                  (False, False, True,  6.0)),
+    (re.compile(r"Platform", re.I),                         (False, False, False, 8.0)),
+    (re.compile(r"Road", re.I),                             (False, False, False, 6.0)),
 ]
 
 
@@ -324,6 +334,113 @@ def _catmull(points, per_seg=8):
     return np.asarray(out)
 
 
+def _cluster_xz(points, radius):
+    """Single-linkage cluster of world (x, y, z) points by XZ distance;
+    returns one centroid per cluster."""
+    pts = [np.asarray(p, float) for p in points]
+    clusters: list[list] = []
+    for p in pts:
+        hit = [k for k, c in enumerate(clusters)
+               if any(math.hypot(p[0] - q[0], p[2] - q[2]) <= radius
+                      for q in c)]
+        if not hit:
+            clusters.append([p])
+            continue
+        merged = [p]
+        for k in sorted(hit, reverse=True):
+            merged += clusters.pop(k)
+        clusters.append(merged)
+    return [np.mean(np.asarray(c, float), axis=0) for c in clusters]
+
+
+def _edge_dist(covered, cxw, czw, px, pz, bx, bz, max_m=48.0):
+    """Metres from world (cxw, czw) to the platform edge along +/-(px, pz)."""
+    step = min(bx, bz) * 0.5
+    reach = []
+    for sgn in (1.0, -1.0):
+        d = 0.0
+        while d < max_m:
+            d += step
+            cx = int((cxw + px * sgn * d) // bx)
+            cz = int((czw + pz * sgn * d) // bz)
+            if (cx, cz) not in covered:
+                break
+        reach.append(d)
+    return max(2.0, min(reach))
+
+
+def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
+                         finish, spacing, verbose):
+    """A flat platform field has no defined path - any line across it is on the
+    road - so `_walk` treats the tiles as a maze and boustrophedons through
+    every one (out-and-back, ~1.9 km for a 0.5 km map). Instead: run the line
+    straight from spawn through the checkpoint(s) to the finish, snapped
+    laterally to the middle of whatever platform is under it, with the
+    half-width measured out to the real edge.
+    """
+    bx, by, bz = block_size
+    covered = {}                         # (cx, cz) -> deck level
+    for b in blocks:
+        for cell in b.cells:
+            covered[cell] = b.cy
+    if not covered:
+        return None
+
+    s, f = np.asarray(spawn, float), np.asarray(finish, float)
+    cps = _cluster_xz(checkpoints, max(bx, bz) * 1.5) if checkpoints else []
+    axis = np.array([f[0] - s[0], f[2] - s[2]])
+    axis = axis / (np.linalg.norm(axis) or 1.0)
+    cps.sort(key=lambda c: np.dot([c[0] - s[0], c[2] - s[2]], axis))
+    anchors = [s] + cps + [f]
+
+    route = []                           # dense world-XZ polyline through anchors
+    for a, b in zip(anchors, anchors[1:]):
+        d = math.hypot(b[0] - a[0], b[2] - a[2])
+        n = max(2, int(d / (min(bx, bz) * 0.5)))
+        for t in np.linspace(0.0, 1.0, n, endpoint=False):
+            route.append((a[0] + (b[0] - a[0]) * t, a[2] + (b[2] - a[2]) * t))
+    route.append((anchors[-1][0], anchors[-1][2]))
+
+    R = 2
+    pts, hw, on = [], [], 0
+    for i, (wx, wz) in enumerate(route):
+        cx0, cz0 = int(round(wx / bx)), int(round(wz / bz))
+        near = [(cx, cz) for cx in range(cx0 - R, cx0 + R + 1)
+                for cz in range(cz0 - R, cz0 + R + 1) if (cx, cz) in covered]
+        j = min(i + 1, len(route) - 1)
+        tvx, tvz = route[j][0] - wx, route[j][1] - wz
+        tn = math.hypot(tvx, tvz) or 1.0
+        px, pz = -tvz / tn, tvx / tn      # unit perpendicular, world XZ
+        if near:
+            on += 1
+            ncx = np.mean([c[0] for c in near]) + 0.5
+            ncz = np.mean([c[1] for c in near]) + 0.5
+            cxw, czw = ncx * bx, ncz * bz
+            lvl = float(np.mean([covered[c] for c in near]))
+            hwm = _edge_dist(covered, cxw, czw, px, pz, bx, bz)
+        else:
+            cxw, czw, lvl, hwm = wx, wz, float(base_height), 8.0
+        pts.append([cxw, (lvl - base_height) * by + RIDE_M, czw])
+        hw.append(hwm)
+
+    pts = np.asarray(pts, float)
+    line = Centerline(_catmull(pts), spacing=spacing)
+    rp, lp = pts[:, [0, 2]], np.asarray(line.points, float)[:, [0, 2]]
+    idx = np.argmin(((lp[:, None, 0] - rp[None, :, 0]) ** 2 +
+                     (lp[:, None, 1] - rp[None, :, 1]) ** 2), axis=1)
+    hw_line = np.asarray(hw, float)[idx]
+    sides_line = np.full(len(line.points), _containment("Platform"))
+    cov = on / max(len(route), 1)
+    if verbose:
+        print(f"  roadtrace: platform field, {len(covered)} cells, straight "
+              f"spawn -> {len(cps)} cp -> finish, {line.length:.0f} m, "
+              f"{cov * 100:.0f}% over platform")
+    return {"order": list(range(len(cps))), "line": line,
+            "half_width": hw_line, "sides": sides_line,
+            "blocks": [b.name for b in blocks], "coverage": cov,
+            "complete": cov > 0.8}
+
+
 def build_road_trace(boxes, names, base_height, block_size,
                      spawn, checkpoints, finish, drivable=None,
                      spacing: float = 2.0, verbose: bool = True):
@@ -337,6 +454,16 @@ def build_road_trace(boxes, names, base_height, block_size,
         if verbose:
             print("  roadtrace: no road blocks in the dump")
         return None
+
+    # A platform field is not a ribbon - walking it block-by-block just snakes.
+    # Route straight through the checkpoints instead. Road-block maps (RoadTech*
+    # etc.) are untouched: they have no Platform* tiles.
+    plat = sum(1 for b in blocks if re.search(r"Platform", b.name, re.I))
+    if spawn is not None and finish is not None and plat >= 0.6 * len(blocks):
+        pc = _platform_centerline(blocks, base_height, block_size, spawn,
+                                  checkpoints or [], finish, spacing, verbose)
+        if pc is not None:
+            return pc
 
     order_idx, adj = _walk(blocks)
     if not order_idx:

@@ -417,6 +417,13 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       Test pad links below &mdash; an unbound seat ends every episode
       &lsquo;stuck&rsquo;, which looks exactly like a policy that cannot drive.</div>
     <div class="row">
+      <button class="go" id="fleetStart" onclick="fleetStart()"
+        title="Start tools/fleet.py: one virtual pad per seat + a telemetry broker, all into this splitscreen game.">Start pad servers</button>
+      <button class="stop" id="fleetStop" onclick="post('/api/fleet/stop').then(tick)"
+        title="Stop the pad-server fleet.">Stop</button>
+      <span class="hint" id="fleetJobStatus" style="margin:0"></span>
+    </div>
+    <div class="row">
       <button onclick="calibrateSeats()">Test pad links</button>
       <span class="hint" id="calibStatus" style="margin:0"></span>
     </div>
@@ -1042,6 +1049,14 @@ async function tick() {
   $('trStop').disabled = !s.trainer.running;
   $('recStart').disabled = s.recorder.running;
   $('recStop').disabled = !s.recorder.running;
+  const fj = s.fleet_job || {};
+  $('fleetStart').disabled = !!fj.running;
+  $('fleetStop').disabled = !fj.running;
+  if (fj.running && !$('fleetJobStatus').querySelector('.warn'))
+    $('fleetJobStatus').innerHTML =
+      `<span class="ok">running</span> (pid ${fj.pid}${fj.adopted ? ', adopted' : ''})`;
+  else if (!fj.running && $('fleetJobStatus').textContent.indexOf('start') < 0)
+    $('fleetJobStatus').textContent = '';
   // The launch form stays editable while a trainer runs - Start is already
   // disabled, so you can only PREP the next run here, never disturb the live
   // one. The Tuning section below hot-reloads into the running trainer on Save.
@@ -1737,6 +1752,17 @@ const HINT_COLS = [
   ['brake',          'text',   'force brake', 'Warm-up only. -1 to 1, or blank.'],
   ['steer',          'text',   'force steer', 'Warm-up only. -1 to 1, or blank.'],
 ];
+
+async function fleetStart() {
+  const seats = Math.max(1, Math.min(+($('trSeats') || {}).value || 4, 4));
+  $('fleetJobStatus').textContent = `starting ${seats} pad server(s)...`;
+  const r = await post('/api/fleet/start', {seats});
+  if (!r || !r.ok) {
+    $('fleetJobStatus').innerHTML =
+      `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
+  }
+  tick();
+}
 
 async function calibrateSeats() {
   $('calibStatus').textContent = 'moving each pad in turn...';

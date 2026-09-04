@@ -58,6 +58,7 @@ from .surfaces import (EFFECT_CLASSES, GROUP_NAMES, N_GROUPS, group_index,
 # the surface. Road/wood/metal keep the penalty - flutter there is just noise.
 _SLIDE_GROUPS = frozenset({"plastic", "dirt", "grass", "ice", "wet"})
 from .speedslide import evaluate as sd_evaluate
+from .iceslide import evaluate as ice_evaluate
 from .hints import (Tapper, active as active_hint, parse as parse_hints,
                     resolve_marks)
 
@@ -513,6 +514,9 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.tapper = Tapper()
         self.sd_grade = "none"
         self.sd_score = 0.0
+        self.ice_grade = "none"
+        self.ice_score = 0.0
+        self.gear = 0
         self.prev_s = 0.0
         self.prev_pos: np.ndarray | None = None
         self.prev_speed = 0.0
@@ -611,6 +615,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self._cp_approach_paid = 0.0
         self._jump_taken_at: set = set()   # jump lips credited this episode
         self._green_streak = 0             # consecutive in-green speedslide steps
+        self._ice_green_streak = 0         # consecutive balanced ice-drift steps
         self._steps_since_progress = 0
         self._dv_ema = 0.0
         # Furthest checkpoint index this run has ever reached. Drives the
@@ -626,6 +631,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.map_uid: str | None = None
         self.map_name: str = ""
         self._landmarks_for: str | None = object()  # never equal to a real uid
+        self._map_load_tries = 0  # empty-dump retries for the current uid
 
         # Per-episode bookkeeping for the run traces and the WHY log.
         self.runs_dir = runs_dir or os.path.join(ROOT, "runs")
@@ -850,6 +856,23 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # accel_floor when flat, 0 when decelerating, up to 1 when pulling.
         self.ss_accel_floor = ss.get("accel_floor", 0.15)
         self.ss_accel_gain = ss.get("accel_gain", 3.0)
+
+        # Ice drift (env/iceslide.py) - same shaping as speedslide, banded on
+        # slip angle, only fires on the `ice` grip group.
+        ic = c.data.get("iceslide", {})
+        self.is_w = ic.get("w", 0.0)
+        self.is_w_any = ic.get("w_any", 0.0)
+        self.is_w_blue = ic.get("w_blue", 0.0)
+        self.is_gamma = ic.get("gamma", 2.0)
+        self.is_streak_gain = ic.get("streak_gain", 0.6)
+        self.is_streak_cap = ic.get("streak_cap", 4.0)
+        self.is_stall_steps = int(ic.get("stall_steps", 20))
+        self.is_floor = ic.get("slip_floor_kmh", 0.0)
+        self.is_accel_floor = ic.get("accel_floor", 0.4)
+        self.is_accel_gain = ic.get("accel_gain", 2.0)
+        _glo, _ghi = int(ic.get("gear_lo", 0)), int(ic.get("gear_hi", 0))
+        self.is_gear_band = (_glo, _ghi) if _ghi > _glo else None
+        self.is_gear_penalty = ic.get("gear_penalty", 0.5)
 
         self.hints = parse_hints(c.data.get("hints"))
         self.marks = c.data.get("marks") or {}
@@ -1604,13 +1627,19 @@ class TrackmaniaEnv(gym.Env if gym else object):
 
     # -- checkpoints ------------------------------------------------------
 
-    def _load_map(self, uid: str | None) -> None:
+    def _load_map(self, uid: str | None) -> bool:
         """Everything static about this map: gates, then effects.
 
         Counting checkpoints by proximity to landmarks is the only reliable
         way - the player API's RaceWaypointTimes reads 0 in Time Attack no
         matter how many you have actually passed, which is why every log line
         used to say cp=0 during runs that were plainly reaching checkpoints.
+
+        Returns True once the plugin has answered with a real map (`dumpmap`
+        reporting blocks, or landmarks with gates). Returns False while the
+        game is still loading the track and `dumpmap` comes back with 0
+        blocks - the caller retries on the next reset rather than latching a
+        blind geometry layer for the whole run.
         """
         self.gates = None
         self.effects = None
@@ -1618,6 +1647,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.map_uid = uid
         self.seen_materials = set()
         self._materials_written = 0
+        map_ready = False
 
         try:
             reply = self.telem.command("landmarks", wait=3.0)
@@ -1710,6 +1740,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         except OSError:
             dump = None
         if dump and dump.get("ok"):
+            map_ready = int(dump.get("blocks", 0) or 0) > 0
             self.effects = EffectMap(dump, self.line)
             skipped = dump.get("free_skipped", 0)
             note = (f", {skipped} free blocks skipped (need Developer mode)"
@@ -1799,6 +1830,15 @@ class TrackmaniaEnv(gym.Env if gym else object):
                       f"keeping the provisional line", flush=True)
         elif self.line is not None and self._track_hw is None:
             self._adopt_track_geometry(uid)
+
+        # `map_ready` is gated on dumpmap returning blocks and NOTHING ELSE.
+        # MapLandmarks (spawn / checkpoints / finish) populate before the
+        # block model is built, so a "we have gates, the map must be loaded"
+        # shortcut fires while dumpmap still reports 0 blocks - which is
+        # exactly how a run committed with no occupancy grid on a map that
+        # had a checkpoint. The block count is the only signal that the
+        # geometry the occupancy dump needs is actually there.
+        return map_ready
 
     def _adopt_track_geometry(self, uid: str | None) -> None:
         """Give a NON-rebuilt line the map's edge geometry.
@@ -2280,11 +2320,29 @@ class TrackmaniaEnv(gym.Env if gym else object):
         if nm:
             self.map_name = nm
         if uid != self._landmarks_for:
-            self._landmarks_for = uid
             self._switch_config(uid)
-            self._load_map(uid)
-            if self.watcher is not None:
-                self.watcher.out_dir = os.path.join(self._map_dir(), "replays")
+            # _load_map returns False when the plugin answers with an empty
+            # map - `dumpmap` reporting 0 blocks - which is what happens when
+            # the trainer is brought up while the game is still loading the
+            # track. Committing then would latch a blind geometry layer (no
+            # gates, no occupancy grid, no roadtrace) for the whole run, which
+            # is exactly the "cp=0/0, every episode stuck" failure. Leave
+            # _landmarks_for unchanged so the next reset retries, up to a cap
+            # so a genuinely block-less map still stops eventually.
+            ready = self._load_map(uid)
+            if ready or self._map_load_tries >= 8:
+                if not ready:
+                    print("  map still reports 0 blocks after 8 tries - "
+                          "carrying on without track geometry", flush=True)
+                self._landmarks_for = uid
+                self._map_load_tries = 0
+                if self.watcher is not None:
+                    self.watcher.out_dir = os.path.join(self._map_dir(),
+                                                        "replays")
+            else:
+                self._map_load_tries += 1
+                print(f"  map not loaded yet (0 blocks) - retry "
+                      f"{self._map_load_tries}/8 on the next reset", flush=True)
         elif self.cfg.maybe_reload():
             self._apply_config()
 
@@ -2324,6 +2382,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self._cp_approach_paid = 0.0
         self._jump_taken_at = set()
         self._green_streak = 0
+        self._ice_green_streak = 0
         self._steps_since_progress = 0
         self._dv_ema = 0.0
         self.splits = []
@@ -2950,6 +3009,48 @@ class TrackmaniaEnv(gym.Env if gym else object):
             elif self.ss_w_blue and grade == "blue":
                 parts["speedslide"] = -self.ss_w_blue
 
+        # -- iceslide ---------------------------------------------------------
+        #
+        # The low-grip counterpart. On ice the fast line IS a big-angle drift
+        # held near the BALANCED slip angle (see env/iceslide.py). Same shape
+        # as speedslide - a convex ramp into the balanced band, a streak
+        # multiplier for holding it, an accel scale, a farm guard - but banded
+        # on slip angle and only on the `ice` grip group. `speed` is the
+        # magnitude; the sign comes from vel . dir.
+        self.ice_grade = "none"
+        self.ice_score = 0.0
+        if (self.cfg.enabled("iceslide") and (self.is_w or self.is_w_blue)
+                and grp == "ice"):
+            _vel = np.asarray(rec.get("vel", [0.0, 0.0, 0.0]), dtype=np.float64)
+            _dir = np.asarray(rec.get("dir", [0.0, 0.0, 1.0]), dtype=np.float64)
+            _dn = np.linalg.norm(_dir)
+            front_ms = float(_vel @ _dir / _dn) if _dn > 1e-6 else speed
+            grade, score, _det = ice_evaluate(
+                rec.get("side_speed", 0.0) or 0.0, front_ms,
+                gear=self.gear, floor_kmh=self.is_floor,
+                gear_band=self.is_gear_band,
+                gear_penalty=self.is_gear_penalty)
+            self.ice_grade, self.ice_score = grade, score
+            if grade == "green":
+                self._ice_green_streak += 1
+            else:
+                self._ice_green_streak = 0
+            if self._steps_since_progress > self.is_stall_steps:
+                score = 0.0
+                self._ice_green_streak = 0
+            if self.is_w and score:
+                shaped = score ** max(self.is_gamma, 0.1)
+                r = self.is_w_any + (self.is_w - self.is_w_any) * shaped
+                if grade == "green" and self.is_streak_gain:
+                    mult = 1.0 + self.is_streak_gain * math.log1p(
+                        self._ice_green_streak)
+                    r *= min(mult, self.is_streak_cap)
+                accel_f = self.is_accel_floor + self._dv_ema * self.is_accel_gain
+                r *= max(0.0, min(1.0, accel_f))
+                parts["iceslide"] = r
+            elif self.is_w_blue and grade == "blue":
+                parts["iceslide"] = -self.is_w_blue
+
         # -- hints --------------------------------------------------------
         #
         # Paid for a brake TAP, not for holding the brake: the pulse is the
@@ -3138,6 +3239,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 # fired. "the speedslide term paid 0.3" is unactionable;
                 # "yellow, 8km/h under the green band" is not.
                 "sd_grade": self.sd_grade, "sd_score": round(self.sd_score, 3),
+                "ice_grade": self.ice_grade,
+                "ice_score": round(self.ice_score, 3),
                 "hint": self.hint_name, "hint_action": self.hint_action,
                 "applied_ratio": round(self.applied_ratio, 3),
                 # Which generation of the tuning config scored this step. The

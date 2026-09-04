@@ -329,6 +329,29 @@ class Link:
         self.spawn = next((i["pos"] for i in items
                            if i.get("kind") == "spawn"), None)
         self.cp_seen = 0
+        self._maybe_cache_geometry(uid)
+
+    def _maybe_cache_geometry(self, uid: str):
+        """Cache the occupancy grid + road trace for a newly seen map, so it
+        exists before any trainer runs. The trainer builds these lazily on its
+        first reset, which silently produced nothing when the map was still
+        loading and left the whole run with no lidar and no track edges. This
+        runs tools/dump_map.py once per uid, in the background."""
+        if not uid or os.path.exists(os.path.join(ROOT, "maps", f"{uid}.json")):
+            return
+        if uid in getattr(self, "_geom_started", set()):
+            return
+        self.__dict__.setdefault("_geom_started", set()).add(uid)
+
+        def _go():
+            try:
+                subprocess.run([VENV_PY, "tools/dump_map.py"], cwd=ROOT,
+                               capture_output=True, text=True, timeout=90)
+            except Exception:                                  # noqa: BLE001
+                pass
+        threading.Thread(target=_go, daemon=True).start()
+        print(f"map {uid}: caching occupancy + roadtrace in the background "
+              f"(tools/dump_map.py)", flush=True)
 
     def _count_cp(self, rec: dict):
         if not self.cps:
@@ -546,6 +569,35 @@ TRAINER = Job("trainer", os.path.join(ROOT, "logs", "train.log"),
               match="train/train_sac.py")
 RECORDER = Job("recorder", os.path.join(ROOT, "logs", "record_line.log"),
                match="tools/record_line.py")
+# The pad-server fleet (N pads + one broker into a splitscreen game).
+# tools/fleet.py supervises and restarts its children, so the panel only has
+# to own the supervisor - one pid, stopped with the same button.
+FLEET = Job("fleet", os.path.join(ROOT, "logs", "fleet.log"),
+            match="tools/fleet.py")
+
+_SYS_PY = None
+
+
+def system_python() -> str:
+    """The interpreter fleet.py must run under: it (and its pad-server
+    children) import evdev, which the torch venv does not have. Same rule as
+    tools/fleet.py; cached so the button is instant on the second click."""
+    global _SYS_PY
+    if _SYS_PY is not None:
+        return _SYS_PY
+    for cand in ("/usr/bin/python3", shutil.which("python3")):
+        if not cand:
+            continue
+        try:
+            subprocess.run([cand, "-c", "import evdev"], check=True,
+                           capture_output=True, timeout=10)
+            _SYS_PY = cand
+            return cand
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                OSError):
+            continue
+    _SYS_PY = ""
+    return ""
 
 
 CONFIG_DIR = os.path.join(ROOT, "configs")
@@ -1758,6 +1810,10 @@ class Handler(BaseHTTPRequestHandler):
                             "log": TRAINER.tail(30)},
                 "recorder": {"running": RECORDER.running,
                              "log": RECORDER.tail(12)},
+                "fleet_job": {"running": FLEET.running,
+                              "pid": FLEET.pid(),
+                              "adopted": FLEET.running and FLEET.proc is None,
+                              "log": FLEET.tail(12)},
                 "lines": list_lines(),
                 "line_info": lines_with_maps(),
                 "fleet": fleet_status(),
@@ -2119,6 +2175,25 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/record/stop":
             self._json(RECORDER.stop())
+            return
+
+        if self.path == "/api/fleet/start":
+            try:
+                seats = int((body or {}).get("seats", 4))
+            except (TypeError, ValueError):
+                seats = 4
+            seats = max(1, min(seats, 4))
+            py = system_python()
+            if not py:
+                self._json({"ok": False, "err": "no system python with evdev - "
+                            "install it: sudo pacman -S python-evdev"})
+                return
+            self._json(FLEET.start(
+                [py, "tools/fleet.py", "--seats", str(seats)]))
+            return
+
+        if self.path == "/api/fleet/stop":
+            self._json(FLEET.stop())
             return
 
         if self.path == "/api/train/start":

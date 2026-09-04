@@ -267,6 +267,28 @@ DEFAULTS: dict = {
         "accel_floor": 0.15,
         "accel_gain": 3.0,
     },
+    # Ice drift - the low-grip counterpart to speedslide. There is no SDHelper
+    # table for ice (it greys out on RoadIce), so env/iceslide.py bands the
+    # SLIP ANGLE instead, modelled on Snacky_TM's "ICE BASICS" blueprints:
+    # green = the BALANCED angle, the shoulders are UNDERANGLE (runs wide) and
+    # OVERANGLE (slides out), overangle kept tighter because it is the worse
+    # error. Only fires on the `ice` grip group. Same shaping knobs as
+    # speedslide. `w` at 0 -> inert; raise it, watch grade/score vs lap time.
+    "iceslide": {
+        "w": 0.0,               # per-step reward at the balanced angle
+        "w_any": 0.0,           # floor for any in-band drift (yellow/orange)
+        "w_blue": 0.0,          # charge for under/overangle while fast on ice
+        "gamma": 2.0,           # >1 convex: the balanced band dominates
+        "streak_gain": 0.6,     # holding a balanced drift pays more each step
+        "streak_cap": 4.0,
+        "stall_steps": 20,      # no reward after N steps of no new ground
+        "slip_floor_kmh": 0.0,  # 0 => module default (70 fwd / 0 back)
+        "accel_floor": 0.4,     # an ice drift bleeds less than an SD; be lenient
+        "accel_gain": 2.0,
+        "gear_lo": 0,           # optional soft gear gate; 0/0 disables it
+        "gear_hi": 0,
+        "gear_penalty": 0.5,
+    },
     # Is the game actually applying what we send?
     #
     # The plugin reports `in_steer` - the input the GAME received - which is
@@ -360,6 +382,9 @@ DEFAULTS: dict = {
         # early costs nothing but it also does nothing, and it is one more
         # term muddying the WHY log.
         "speedslide": False,
+        # Ice-drift band (env/iceslide.py). Only fires on the `ice` grip group,
+        # and only with iceslide.w > 0. Off by default like speedslide.
+        "iceslide": False,
     },
 }
 
