@@ -128,6 +128,39 @@ class Pad:
             self.ui.write(e.EV_ABS, sc, 0)
             self.ui.syn()
 
+    # Raw 1:1 passthrough for a full-controller mirror (tools/gamepad_bridge.py
+    # --mirror). The virtual pad already advertises both sticks, both triggers
+    # and the hat in CAPABILITIES; act()/nav()/press() just never drive most
+    # of them. This lets a real controller's every axis and button land on the
+    # pad the game already trusts - right stick for the editor camera, L3/R3,
+    # analog triggers - without relaunching the game to enumerate a new device.
+    _MIRROR_ABS = {e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY,
+                   e.ABS_Z, e.ABS_RZ, e.ABS_HAT0X, e.ABS_HAT0Y}
+    _MIRROR_KEY = set(BUTTONS.values()) | {e.BTN_THUMBL, e.BTN_THUMBR}
+
+    def raw(self, kind: str, code: int, value: int):
+        code = int(code)
+        with self.lock:
+            if kind == "abs":
+                if code not in self._MIRROR_ABS:
+                    return
+                self.ui.write(e.EV_ABS, code, int(value))
+                self.ui.syn()
+                if code == e.ABS_X:
+                    self.state["steer"] = max(-1.0, min(1.0, value / AXIS_MAX))
+                elif code == e.ABS_RZ:
+                    self.state["gas"] = max(0.0, min(1.0, value / TRIG_MAX))
+                elif code == e.ABS_Z:
+                    self.state["brake"] = max(0.0, min(1.0, value / TRIG_MAX))
+            elif kind == "key":
+                if code not in self._MIRROR_KEY:
+                    return
+                self.ui.write(e.EV_KEY, code, 1 if int(value) else 0)
+                self.ui.syn()
+            else:
+                raise ValueError(f"raw kind must be abs|key, got {kind!r}")
+            self.state["t"] = time.time()
+
     def snapshot(self) -> str:
         now = time.time()
         with self.lock:
@@ -216,6 +249,9 @@ def handle(conn, pad):
                         # d-pad tap for menu navigation: nav up|down|left|right [ms]
                         hold = float(parts[2]) if len(parts) > 2 else 90.0
                         pad.nav(parts[1].lower(), hold_ms=hold)
+                    elif cmd == "raw":
+                        # full-controller mirror: raw abs|key <evdev code> <value>
+                        pad.raw(parts[1].lower(), int(parts[2]), int(parts[3]))
                     elif cmd == "reset":
                         pad.reset()
                     elif cmd == "state":
