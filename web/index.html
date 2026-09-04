@@ -1619,6 +1619,19 @@ const FIELD = {
   'speedslide.accel_gain': ['accel scaling', 0.5, 'How fast the reward ramps to full as the slide accelerates.'],
   'speedslide.w_blue':     ['not-sliding penalty', 0.01, "Per step fast enough to slide usefully but not sliding. Leave at 0 first."],
   'speedslide.speed_floor_kmh': ['speed floor override (km/h)', 10, "0 = use SDHelper's per-surface floor (400 road / 200 grass-dirt). Override to test slow."],
+  'iceslide.w':            ['balanced-drift reward', 0.5, 'Per step at the balanced slip angle, before the streak multiplier. The main ice-drift reward.'],
+  'iceslide.w_any':        ['any-drift floor', 0.1, 'Per step for any real drift (underangle/overangle shoulder and in). A fraction of the balanced reward.'],
+  'iceslide.gamma':        ['ramp shape', 0.1, 'Exponent on the band score. >1 climbs steeply into the balanced band; 1 = linear.'],
+  'iceslide.streak_gain':  ['stay-balanced gain', 0.1, 'How hard holding the balanced angle is rewarded. 0 disables the streak bonus.'],
+  'iceslide.streak_cap':   ['stay-balanced cap', 0.5, 'Ceiling on the streak multiplier.'],
+  'iceslide.stall_steps':  ['stall cutoff (steps)', 1, 'Drift reward stops after this many steps with no new ground reached.'],
+  'iceslide.accel_floor':  ['flat-drift fraction', 0.05, 'What a speed-holding drift pays, as a fraction of full. Bleeding speed pays 0.'],
+  'iceslide.accel_gain':   ['accel scaling', 0.5, 'How fast the reward ramps to full as the drift accelerates.'],
+  'iceslide.w_blue':       ['under/overangle penalty', 0.01, 'Per step fast enough to drift usefully but under- or over-angled. Leave at 0 first.'],
+  'iceslide.slip_floor_kmh': ['speed floor override (km/h)', 10, '0 = module default (70 forward / 0 reversing). Override to test slow.'],
+  'iceslide.gear_lo':      ['soft gear gate: low', 1, 'Optional. 0/0 (with gear_hi) disables it - no defensible gear->angle table exists.'],
+  'iceslide.gear_hi':      ['soft gear gate: high', 1, 'Optional upper gear. Outside [lo, hi] the score is scaled by gear_penalty.'],
+  'iceslide.gear_penalty': ['gear-gate penalty', 0.05, 'Score multiplier outside the soft gear gate, if one is set.'],
   'action.binary_gas':     ['throttle on/off', 1, 'Threshold the throttle to fully on or fully off. 1 on, 0 off.'],
   'action.binary_brake':   ['brake on/off', 1, 'Same for the brake.'],
   'action.gas_threshold':  ['throttle threshold', 0.05, 'Network output above this means throttle on. 0 is mid-range.'],
@@ -1636,6 +1649,7 @@ const TOGGLE_HELP = {
   gear: 'Apply the gear bonus and downshift penalty.',
   accel: 'Apply the throttle and acceleration bonuses.',
   speedslide: "Grade slides against SDHelper's band table. Does nothing below the surface's speed floor.",
+  iceslide: "Grade ice drifts by slip angle (no SDHelper table exists for ice). Only fires on the ice grip group.",
 };
 
 let CONFIG = null, CONFIG_META = null, TUNE_DIRTY = false;
@@ -1705,6 +1719,7 @@ function renderFields() {
   const parts = [];
   const sections = [['episode', 'episode'], ['reward', 'reward'],
                     ['action', 'controls'], ['speedslide', 'speedslide (high speed only)'],
+                    ['iceslide', 'iceslide (ice grip group only)'],
                     ['line', 'reference line &amp; checkpoints'],
                     ['stuck', 'stuck detector'], ['reset', 'reset']];
   for (const [key, label] of sections) {
