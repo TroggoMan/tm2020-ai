@@ -400,10 +400,28 @@ def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
         for t in np.linspace(0.0, 1.0, n, endpoint=False):
             route.append((a[0] + (b[0] - a[0]) * t, a[2] + (b[2] - a[2]) * t))
     route.append((anchors[-1][0], anchors[-1][2]))
+    n_core = len(route)                   # everything past here is run-out
+
+    # Run-out past the finish. Without it the line ends ON the finish point, so
+    # the lookahead and the progress term run dry a car-length early and the
+    # policy learns to lift and coast into the gate. These points are NOT
+    # lateral-snapped (the loop below skips i >= n_core) - the platform usually
+    # ends at the finish, and snapping would just drag them back onto it.
+    if len(route) >= 2:
+        fx, fz = route[-1]
+        ex, ez = fx - route[-2][0], fz - route[-2][1]
+        en = math.hypot(ex, ez) or 1.0
+        ex, ez = ex / en, ez / en
+        for m in range(1, 14):           # ~26 m at 2 m spacing
+            route.append((fx + ex * 2.0 * m, fz + ez * 2.0 * m))
 
     R = 2
     pts, hw, on = [], [], 0
     for i, (wx, wz) in enumerate(route):
+        if i >= n_core:                  # run-out: keep raw, carry last width
+            pts.append([wx, pts[-1][1] if pts else RIDE_M, wz])
+            hw.append(hw[-1] if hw else 8.0)
+            continue
         cx0, cz0 = int(round(wx / bx)), int(round(wz / bz))
         near = [(cx, cz) for cx in range(cx0 - R, cx0 + R + 1)
                 for cz in range(cz0 - R, cz0 + R + 1) if (cx, cz) in covered]
