@@ -38,6 +38,8 @@ FORWARD = {
     "road":  {"limit": 400.0, "band": (7.0, 13.0, 19.0, 22.0, 28.0, 34.0)},
     "grass": {"limit": 200.0, "band": (1.0, 1.0, 7.0, 10.0, 13.0, 22.0)},
     "dirt":  {"limit": 200.0, "band": (1.0, 3.0, 9.0, 12.0, 18.0, 24.0)},
+    # PLASTIC - NOT from SDHelper. See _PLASTIC below for why it cannot be.
+    "plastic": {"limit": 200.0, "band": (2.0, 5.0, 8.0, 12.0, 16.0, 21.0)},
 }
 
 # Reversing. SDHelper applies no speed floor at all going backwards.
@@ -45,6 +47,7 @@ BACKWARD = {
     "road":  {"limit": 0.0, "band": (17.0, 23.0, 29.0, 32.0, 38.0, 44.0)},
     "grass": {"limit": 0.0, "band": (1.0, 6.0, 12.0, 15.0, 21.0, 27.0)},
     "dirt":  {"limit": 0.0, "band": (2.0, 8.0, 14.0, 17.0, 23.0, 29.0)},
+    "plastic": {"limit": 0.0, "band": (2.0, 7.0, 13.0, 16.0, 21.0, 27.0)},
 }
 
 # SDHelper switches on the raw material name under the front-left wheel, and
@@ -53,6 +56,40 @@ BACKWARD = {
 # silently never fires.
 _GRASS = ("Green", "Grass", "WetGrass", "Wheat")
 _DIRT = ("Dirt", "DirtRoad", "WetDirtRoad", "Sand", "Gravel")
+
+# PLASTIC - added here, and its band is the one thing in this file that is NOT
+# lifted from SDHelper.
+#
+# WHY SDHELPER HAS NOTHING TO LIFT: the helper's entire output is swapping the
+# skidmark texture on disk so the marks come out green/yellow/orange/blue.
+# Plastic draws NO SKIDMARKS AT ALL, so there was never anything for it to
+# paint and it has no plastic case - Plastic fell through its `else` into the
+# ROAD row, which demands 400 km/h. On a 30%-grip surface that floor is never
+# cleared, so the term was silently dead on every plastic track. Same shape of
+# gap as ice, which is why env/iceslide.py had to be written from scratch.
+#
+# WHERE THESE NUMBERS COME FROM (community consensus, not measurement):
+#   * slides start once you clear 200-220 km/h, best in 4th gear and up
+#     -> limit 200, matching grass/dirt rather than road's 400;
+#   * "slide the absolute minimum possible", and sliding wide "dramatically
+#     bogs down your speed" -> a NARROW, LOW green with the upper shoulders
+#     pulled in tighter than dirt's (16/21 against dirt's 18/24), because
+#     over-sliding is the expensive error here;
+#   * anchor for the green itself: road's green is 19-22 km/h of side speed at
+#     >=400 km/h, i.e. atan(20/400) ~= 2.9 deg of slip. Holding that same
+#     shallow angle at 200 km/h works out at ~10 km/h of side speed, hence
+#     green 8-12.
+#
+# UNITS TRAP, do not "fix" this by typing 35 into the band: the widely quoted
+# "~35% angle" for plastic is a STEERING INPUT percentage, not a slip angle,
+# and this table is in km/h of side speed. The three are different quantities.
+# Treat the band as a seed estimate exactly as env/iceslide.py says of its own:
+# set w > 0, watch the WHY log's grade/score against lap time, move the edges.
+#
+# Because plastic is a genuine speedslide (shallow angle, carry speed) rather
+# than ice's balance-a-big-angle problem, it belongs in this module with the
+# streak / accel / stall machinery, not in iceslide.
+_PLASTIC = ("Plastic",)
 
 MS_TO_KMH = 3.6
 
@@ -63,11 +100,18 @@ _SCORE_AT = (0.0, 0.35, 1.0, 1.0, 0.35, 0.0)
 
 
 def sd_surface(material_name: str) -> str:
-    """Which of SDHelper's three surface cases a material falls into."""
+    """Which surface case a material falls into.
+
+    SDHelper's own three, plus plastic - which the helper cannot distinguish
+    (no skidmarks to paint) and so silently dropped into `road` and its
+    unreachable 400 km/h floor. See _PLASTIC.
+    """
     if material_name in _GRASS:
         return "grass"
     if material_name in _DIRT:
         return "dirt"
+    if material_name in _PLASTIC:
+        return "plastic"
     return "road"
 
 

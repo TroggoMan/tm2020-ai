@@ -114,5 +114,18 @@
     "speedslide": false,
     "iceslide": true
   },
-  "markers": []
+  "markers": [
+    {
+      "s": 114.2,
+      "bonus": 50.0
+    },
+    {
+      "s": 193.3,
+      "bonus": 100.0
+    },
+    {
+      "s": 431.9,
+      "bonus": 150.0
+    }
+  ]
 }
