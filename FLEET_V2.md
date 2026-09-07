@@ -54,11 +54,16 @@ Day** only.
 RACE_BULK as described below assumes the fleet races *our* explored line on *our*
 map. On free accounts it cannot. The options are:
 
-1. **Train on campaign tracks.** Every free account has the current seasonal
-   campaign, identical across accounts, and the driver already trains on a
-   Summer 2026 track. SURVEY/EXPLORE still run on the privileged instance; the
-   fleet races the same official map. This costs nothing and is the default
-   assumption until someone decides otherwise.
+1. ~~**Train on campaign tracks.**~~ **WRONG, corrected 2026-09-07: a free
+   account gets only the FIRST 10 maps of the seasonal campaign, not all 25.**
+   That is a much smaller corpus than this option assumed, and it is
+   front-loaded with the easy maps - so it contains no ice at all, and none of
+   the technical back half. Any surface or technique that only appears past
+   map 10 is unreachable on a free account by every route: not campaign (not
+   granted), not local/TMX (needs Club Access), not the editor (a rebuilt
+   local map is still a local map - `Permissions::PlayLocalMap()` is an
+   account-tier permission, not a file property).
+   SURVEY/EXPLORE still run on the privileged instance either way.
 2. **Club Access per fleet account.** Restores custom maps, and reintroduces a
    per-account subscription - the exact thing v2 exists to avoid.
 
