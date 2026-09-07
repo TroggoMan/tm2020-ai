@@ -109,8 +109,13 @@ EXPLORE = [
 # The racer inherits the explorer's weights, so the steering regime has to
 # change deliberately rather than by leaving the explore file in place.
 RACE_DELTA = [
-    ("action", "steer_rate", 0.0, True,
-     "the racer must be able to flick lock-to-lock in one frame"),
+    ("action", "steer_rate", 8.0, True,
+     "KEPT, not dropped to 0 - the tarmac racer drops the slew limit because "
+     "some TM technique needs lock-to-lock in one frame, but ice is a BALANCE "
+     "problem: Snacky's ICE BASICS (which env/iceslide.py is built on) is "
+     "about holding a sustained counter-steer, not flicking. And the racer "
+     "inherits a policy trained WITH the ramp, so removing it means oversteer "
+     "while the buffer is empty - which on ice is a spin, not a lost tenth"),
     ("line", "w_soft", 0.002, True,
      "a real line exists now, so leaning on it is fair"),
     ("line", "max_offset", 60.0, True,
