@@ -37,7 +37,23 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-[ "$MODE" = school ] && MODE=signed
+# "school" is NOT a mode this script can set, and pretending otherwise cost a
+# session: Openplanet's signature mode is chosen in the F3 overlay at RUNTIME
+# and is recorded NOWHERE in Settings.ini (the whole file was checked - only
+# DeveloperMode and ShowUnsignedPluginWarning exist). This alias quietly turned
+# `op-mode.sh school` into `signed`, so it looked automated and was not.
+#
+# Note also that Developer mode is a SUPERSET: the VehicleState API - which
+# TrackmaniaRL Connect (siteid 421) needs - works fine under DeveloperMode=true,
+# measured 2026-09-07 at 60Hz. So a PAID instance needs no toggle at all. Only
+# a free signed-only account might, and that is still untested.
+if [ "$MODE" = school ]; then
+  echo "!! 'school' is not settable from Settings.ini - the signature mode is a" >&2
+  echo "!! runtime choice in the F3 overlay and is not persisted anywhere." >&2
+  echo "!! Falling back to 'signed' (DeveloperMode=false), which is NOT School." >&2
+  echo "!! If you wanted the VehicleState API, 'dev' grants it; see README." >&2
+  MODE=signed
+fi
 [ -n "$MODE" ] || { echo "usage: $0 {dev|signed|status} [--prefix DIR | --instance N]" >&2; exit 2; }
 
 INI="$PREFIX/pfx/drive_c/users/steamuser/OpenplanetNext/Settings.ini"

@@ -28,6 +28,7 @@ all of which the existing dump already carries.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import os
@@ -369,6 +370,111 @@ def _edge_dist(covered, cxw, czw, px, pz, bx, bz, max_m=48.0):
     return max(2.0, min(reach))
 
 
+def _cell_of(wx, wz, bx, bz):
+    """World XZ -> occupancy cell. FLOOR, not round.
+
+    A cell (cx, cz) spans [cx*bx, (cx+1)*bx) and is centred at (cx+0.5)*bx -
+    which is how the dump writes them and how the panel draws them. The old
+    ``int(round(w / b))`` here named the NEAREST cell ORIGIN, half a cell out,
+    so every occupancy question this file asked was answered about the wrong
+    cell: the spawn's own cell tested as uncovered.
+    """
+    return int(math.floor(wx / bx)), int(math.floor(wz / bz))
+
+
+def _cell_path(covered, start, goal):
+    """A* from cell `start` to cell `goal` across `covered` only.
+
+    8-connected, but a diagonal step is legal only when BOTH of its shared-edge
+    neighbours are covered too - otherwise the path clips the corner of a hole,
+    which is not drivable however good it looks on the map.
+
+    Cells with fewer covered neighbours cost slightly more, so an equal-length
+    route prefers the middle of a platform to its lip. That is the job the old
+    centroid nudge was trying to do, done in a way that cannot land in a hole.
+
+    That preference is a TIE-BREAKER and nothing more. At 0.15 per missing
+    neighbour it outweighed the ~1.0 distance term, and A* snaked through all
+    19 cells of the ice map for a 533 m route between landmarks 129 m apart -
+    the same boustrophedon this module's docstring warns about for `_walk`.
+    Keeping the lip is worth a few percent of path cost, never a detour.
+    """
+    EDGE_W = 0.02                             # max 0.16 against a ~1.0 step
+    if start not in covered or goal not in covered:
+        return None
+    if start == goal:
+        return [start]
+    nbr8 = [(-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    edginess = {}
+    for c in covered:
+        n = sum(1 for dx, dz in nbr8 if (c[0] + dx, c[1] + dz) in covered)
+        edginess[c] = (8 - n) * EDGE_W
+
+    def h(c):
+        return math.hypot(c[0] - goal[0], c[1] - goal[1])
+
+    open_q = [(h(start), 0.0, start)]
+    came, best = {}, {start: 0.0}
+    while open_q:
+        _, g, cur = heapq.heappop(open_q)
+        if cur == goal:
+            path = [cur]
+            while cur in came:
+                cur = came[cur]
+                path.append(cur)
+            return path[::-1]
+        if g > best.get(cur, float("inf")):
+            continue                          # stale heap entry
+        for dx, dz in nbr8:
+            nxt = (cur[0] + dx, cur[1] + dz)
+            if nxt not in covered:
+                continue
+            if dx and dz and ((cur[0] + dx, cur[1]) not in covered
+                              or (cur[0], cur[1] + dz) not in covered):
+                continue                      # no cutting a hole's corner
+            step = math.hypot(dx, dz) + edginess[nxt]
+            ng = g + step
+            if ng < best.get(nxt, float("inf")):
+                best[nxt] = ng
+                came[nxt] = cur
+                heapq.heappush(open_q, (ng + h(nxt), ng, nxt))
+    return None
+
+
+def _seg_on_cover(a, b, covered, bx, bz, step=4.0):
+    """Is every point of the straight segment a->b over a covered cell?"""
+    d = math.hypot(b[0] - a[0], b[1] - a[1])
+    n = max(2, int(d / step) + 1)
+    for i in range(n + 1):
+        t = i / n
+        if _cell_of(a[0] + (b[0] - a[0]) * t,
+                    a[1] + (b[1] - a[1]) * t, bx, bz) not in covered:
+            return False
+    return True
+
+
+def _string_pull(pts, covered, bx, bz):
+    """Drop every waypoint that can be skipped without leaving the platform.
+
+    An A* path is a staircase of 32 m cells; driven literally it is a zigzag.
+    Shortcutting greedily - only ever between points whose connecting segment
+    stays covered end to end - recovers the straight runs while keeping the
+    guarantee that the line never crosses a gap.
+    """
+    if len(pts) < 3:
+        return list(pts)
+    out = [pts[0]]
+    i = 0
+    while i < len(pts) - 1:
+        j = len(pts) - 1
+        while j > i + 1 and not _seg_on_cover(pts[i], pts[j], covered, bx, bz):
+            j -= 1
+        out.append(pts[j])
+        i = j
+    return out
+
+
 def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
                          finish, spacing, verbose):
     """A flat platform field has no defined path - any line across it is on the
@@ -393,36 +499,88 @@ def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
     cps.sort(key=lambda c: np.dot([c[0] - s[0], c[2] - s[2]], axis))
     anchors = [s] + cps + [f]
 
-    route = []                           # dense world-XZ polyline through anchors
+    # ROUTE THE GAPS, do not assume them away. The straight interpolation this
+    # used to do treated the line between two landmarks as drivable by
+    # definition, and the only correction was a pull toward the mean of nearby
+    # cells - a mean that sits INSIDE a hole whenever the cells straddle one.
+    # Measured on the ice map: 45% of the line hung over void, 44 m of it in one
+    # unbroken run. A* over the covered cells cannot produce that, because a
+    # cell that is not covered is not a move.
+    #
+    # Falls back to the old straight interpolation when no path exists (a
+    # landmark off the grid, or genuinely disconnected islands), so a map that
+    # used to build a line still builds one.
+    route, pathed = [], True
     for a, b in zip(anchors, anchors[1:]):
-        d = math.hypot(b[0] - a[0], b[2] - a[2])
-        n = max(2, int(d / (min(bx, bz) * 0.5)))
-        for t in np.linspace(0.0, 1.0, n, endpoint=False):
-            route.append((a[0] + (b[0] - a[0]) * t, a[2] + (b[2] - a[2]) * t))
-    route.append((anchors[-1][0], anchors[-1][2]))
-    n_core = len(route)                   # everything past here is run-out
+        ca = _cell_of(a[0], a[2], bx, bz)
+        cb = _cell_of(b[0], b[2], bx, bz)
+        cells = _cell_path(covered, ca, cb)
+        if cells is None:
+            pathed = False
+            break
+        seg = [((c[0] + 0.5) * bx, (c[1] + 0.5) * bz) for c in cells]
+        # real landmark positions at the ends, not the cell centres they sit in
+        seg[0] = (a[0], a[2])
+        seg[-1] = (b[0], b[2])
+        seg = _string_pull(seg, covered, bx, bz)
+        route.extend(seg[:-1] if b is not anchors[-1] else seg)
+    if not pathed:
+        if verbose:
+            print("  roadtrace: no path over the platform between landmarks - "
+                  "falling back to a straight route (may cross gaps)")
+        route = []
+        for a, b in zip(anchors, anchors[1:]):
+            d = math.hypot(b[0] - a[0], b[2] - a[2])
+            n = max(2, int(d / (min(bx, bz) * 0.5)))
+            for t in np.linspace(0.0, 1.0, n, endpoint=False):
+                route.append((a[0] + (b[0] - a[0]) * t,
+                              a[2] + (b[2] - a[2]) * t))
+        route.append((anchors[-1][0], anchors[-1][2]))
+    else:
+        # densify so the width measurement and the spline have something to
+        # work with - string pulling leaves long straight runs with no interior
+        # points, and Catmull-Rom through 3 far-apart points bows badly.
+        dense = [route[0]]
+        for a, b in zip(route, route[1:]):
+            d = math.hypot(b[0] - a[0], b[1] - a[1])
+            n = max(1, int(d / (min(bx, bz) * 0.35)))
+            for k in range(1, n + 1):
+                t = k / n
+                dense.append((a[0] + (b[0] - a[0]) * t,
+                              a[1] + (b[1] - a[1]) * t))
+        route = dense
+    # No run-out past the finish: a trailing segment used to be extrapolated
+    # here to keep the lookahead/progress term fed right up to the gate, but
+    # it was extrapolated from the RAW (unsnapped) finish point while the
+    # finish point actually recorded into `pts` below is lateral-snapped to
+    # the platform's centre - a discontinuity between the two that showed up
+    # as the car aiming off to one side of the finish on approach. Ending the
+    # line exactly on the finish removes the kink; if lift-and-coast near the
+    # gate comes back, fix the lookahead/progress padding instead of
+    # reintroducing points past the finish.
 
-    # Run-out past the finish. Without it the line ends ON the finish point, so
-    # the lookahead and the progress term run dry a car-length early and the
-    # policy learns to lift and coast into the gate. These points are NOT
-    # lateral-snapped (the loop below skips i >= n_core) - the platform usually
-    # ends at the finish, and snapping would just drag them back onto it.
-    if len(route) >= 2:
-        fx, fz = route[-1]
-        ex, ez = fx - route[-2][0], fz - route[-2][1]
-        en = math.hypot(ex, ez) or 1.0
-        ex, ez = ex / en, ez / en
-        for m in range(1, 14):           # ~26 m at 2 m spacing
-            route.append((fx + ex * 2.0 * m, fz + ez * 2.0 * m))
+    # Spawn / checkpoints / finish are the GAME's own statement of where the
+    # route is - the line has to pass through them exactly. The lateral snap
+    # below averages platform cells over a +/-2 cell (+/-64 m) window, and near
+    # the end of a platform that average is one-sided, so it used to drag the
+    # last point 46 m short of the finish gate and 26 m to the side. That
+    # sideways drag is what "aiming to the left of the finish" was.
+    #
+    # Hard-pinning just the anchors would trade the drift for a kink against
+    # their dragged neighbours, so the snap correction is faded to zero over
+    # FADE_M instead: exact on the landmark, fully snapped once clear of it.
+    anchor_xz = np.asarray([[a[0], a[2]] for a in anchors], float)
+    FADE_M = 20.0
 
     R = 2
     pts, hw, on = [], [], 0
     for i, (wx, wz) in enumerate(route):
-        if i >= n_core:                  # run-out: keep raw, carry last width
-            pts.append([wx, pts[-1][1] if pts else RIDE_M, wz])
-            hw.append(hw[-1] if hw else 8.0)
-            continue
-        cx0, cz0 = int(round(wx / bx)), int(round(wz / bz))
+        cx0, cz0 = _cell_of(wx, wz, bx, bz)
+        # Honest coverage: is THIS point on solid ground? The old counter asked
+        # whether any cell lay within +/-2 cells (+/-64 m) and so reported 100%
+        # for a line that was 45% over void.
+        if (cx0, cz0) in covered:
+            on += 1
         near = [(cx, cz) for cx in range(cx0 - R, cx0 + R + 1)
                 for cz in range(cz0 - R, cz0 + R + 1) if (cx, cz) in covered]
         j = min(i + 1, len(route) - 1)
@@ -430,7 +588,6 @@ def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
         tn = math.hypot(tvx, tvz) or 1.0
         px, pz = -tvz / tn, tvx / tn      # unit perpendicular, world XZ
         if near:
-            on += 1
             ncx = np.mean([c[0] for c in near]) + 0.5
             ncz = np.mean([c[1] for c in near]) + 0.5
             cxw, czw = ncx * bx, ncz * bz
@@ -438,7 +595,24 @@ def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
             hwm = _edge_dist(covered, cxw, czw, px, pz, bx, bz)
         else:
             cxw, czw, lvl, hwm = wx, wz, float(base_height), 8.0
-        pts.append([cxw, (lvl - base_height) * by + RIDE_M, czw])
+        # Height still comes from the deck under the point; prefer the cell the
+        # point is actually on over the +/-2 window, which averages across a
+        # step and floats the line between two decks.
+        if (cx0, cz0) in covered:
+            lvl = float(covered[(cx0, cz0)])
+        k = int(np.argmin(np.hypot(anchor_xz[:, 0] - wx,
+                                   anchor_xz[:, 1] - wz)))
+        d_anchor = float(math.hypot(anchor_xz[k, 0] - wx,
+                                    anchor_xz[k, 1] - wz))
+        w = min(1.0, d_anchor / FADE_M)   # 0 on a landmark, 1 well clear of it
+        y_snap = (lvl - base_height) * by + RIDE_M
+        y_anchor = float(anchors[k][1])
+        # A pathed route is already on solid ground and string-pulled; moving
+        # it toward the cell centroid is exactly the step that used to put it
+        # in a hole, so the lateral snap only runs for the fallback route.
+        sx = wx if pathed else wx + (cxw - wx) * w
+        sz = wz if pathed else wz + (czw - wz) * w
+        pts.append([sx, y_anchor + (y_snap - y_anchor) * w, sz])
         hw.append(hwm)
 
     pts = np.asarray(pts, float)
@@ -450,9 +624,10 @@ def _platform_centerline(blocks, base_height, block_size, spawn, checkpoints,
     sides_line = np.full(len(line.points), _containment("Platform"))
     cov = on / max(len(route), 1)
     if verbose:
-        print(f"  roadtrace: platform field, {len(covered)} cells, straight "
+        print(f"  roadtrace: platform field, {len(covered)} cells, "
+              f"{'routed' if pathed else 'STRAIGHT (no path found)'} "
               f"spawn -> {len(cps)} cp -> finish, {line.length:.0f} m, "
-              f"{cov * 100:.0f}% over platform")
+              f"{cov * 100:.0f}% of points on solid ground")
     return {"order": list(range(len(cps))), "line": line,
             "half_width": hw_line, "sides": sides_line,
             "blocks": [b.name for b in blocks], "coverage": cov,

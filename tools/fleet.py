@@ -19,6 +19,8 @@ and watched here.
 
     python3 tools/fleet.py --instances 2          # start and supervise
     python3 tools/fleet.py --instances 2 --check  # just report what is up
+    python3 tools/fleet.py --games 3 --seats 4    # 3 games, 4 splitscreen
+                                                  # seats each = 12 cars
 
 WHAT THIS DOES NOT DO, deliberately: it does not create Ubisoft accounts and it
 does not log in. One account can only be signed in once at a time, so N
@@ -139,7 +141,11 @@ def main() -> int:
     ap.add_argument("--no-broker", action="store_true")
     ap.add_argument("--seats", type=int, default=1,
                     help="splitscreen: N pads into ONE game, sharing one "
-                         "broker (pads 8765/8775/8785/8795)")
+                         "broker (game 0 pads: 8765/8775/8785/8795)")
+    ap.add_argument("--games", type=int, default=1,
+                    help="how many GAMES to plumb, each with --seats pads and "
+                         "one broker. Game 0 keeps the ports everything "
+                         "already uses; game 1 starts at 8900, game 2 at 8940.")
     args = ap.parse_args()
 
     n = max(1, args.instances)
@@ -156,28 +162,36 @@ def main() -> int:
 
     procs: list[Proc] = []
 
-    if args.seats > 1:
-        # Splitscreen: N pads into ONE game. One broker, not N - every seat
-        # reads its own entry out of the same telemetry stream, so a second
-        # broker would just be a second connection to the same plugin.
-        from env.ports import seat_ports
-        for i in range(args.seats):
-            p = seat_ports(i)
-            if not args.no_pad:
+    if args.seats > 1 or args.games > 1:
+        # Splitscreen: N pads into ONE game, times G games. One broker per
+        # GAME, not per seat - every seat reads its own entry out of the same
+        # telemetry stream, so a second broker would just be a second
+        # connection to the same source.
+        #
+        # --instance must be globally unique across every pad, not per game:
+        # it picks the uinput device's USB product id, and two devices sharing
+        # one id is exactly how the game ends up unable to tell two seats
+        # apart. game*MAX_SEATS + seat gives each pad its own.
+        from env.ports import seat_ports, MAX_SEATS
+        for g in range(max(1, args.games)):
+            for i in range(args.seats):
+                p = seat_ports(i, game=g, raw=True)
+                if not args.no_pad:
+                    procs.append(Proc(
+                        f"g{g}pad{i}",
+                        [py, "control/virtual_pad_server.py",
+                         "--port", str(p["pad"]),
+                         "--instance", str(g * MAX_SEATS + i)],
+                        os.path.join(ROOT, "logs", f"g{g}pad{i}.log")))
+            if not args.no_broker:
+                p = seat_ports(0, game=g, raw=True)
                 procs.append(Proc(
-                    f"pad{i}",
-                    [py, "control/virtual_pad_server.py",
-                     "--port", str(p["pad"]), "--instance", str(i)],
-                    os.path.join(ROOT, "logs", f"pad{i}.log")))
-        if not args.no_broker:
-            p = seat_ports(0)
-            procs.append(Proc(
-                "broker0",
-                [sys.executable, "telemetry/broker.py",
-                 "--port", str(p["broker"]),
-                 "--upstream-port", str(p["plugin"])],
-                os.path.join(ROOT, "logs", "broker0.log")))
-        return _supervise(procs, args.seats, seats=True)
+                    f"broker{g}",
+                    [sys.executable, "telemetry/broker.py",
+                     "--port", str(p["broker"]),
+                     "--upstream-port", str(p["plugin"])],
+                    os.path.join(ROOT, "logs", f"broker{g}.log")))
+        return _supervise(procs, max(1, args.games) * args.seats, seats=True)
 
     for i in range(n):
         ports = instance_ports(i)

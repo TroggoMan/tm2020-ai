@@ -197,6 +197,12 @@ up)
   # software X server is no longer trying to service the game's full Vulkan
   # present traffic, which is what produced "XIO: fatal IO error 110" and the
   # fallback to :0. Set GAMESCOPE=0 to go back to the raw Xvfb launch.
+  # Frame cap. Control and observation are frame-locked (see
+  # tools/frame-cap.sh), so this is a ceiling, not a throttle - 60 with
+  # control_hz at 40. TMAI_FPS_CAP=off to disable.
+  "$(dirname "${BASH_SOURCE[0]}")/frame-cap.sh" "${TMAI_FPS_CAP:-60}" 2>/dev/null \
+    | sed 's/^/  fps: /' || true
+
   common_env=(
     STEAM_COMPAT_DATA_PATH="$COMPAT"
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_CLIENT"

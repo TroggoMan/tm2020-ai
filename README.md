@@ -27,6 +27,8 @@ debugging that forced it. If you just want to train the thing, read
 - [How it's wired](#how-its-wired)
   - [The broker and the socket directions](#the-broker-and-the-socket-directions)
   - [Ports, when running several games](#ports-when-running-several-games)
+  - [Spinning up instances](#spinning-up-instances)
+  - [Frame rate is the control rate](#frame-rate-is-the-control-rate)
   - [Packaging: `.op`, not a folder](#packaging-op-not-a-folder)
   - [Signature Mode: School (required, every launch)](#signature-mode-school-required-every-launch)
   - [Map control: no clicking needed](#map-control-no-clicking-needed)
@@ -194,6 +196,154 @@ python and cannot import from the venv. `tools/fleet.py --instances N` starts
 and supervises the pad servers and brokers; `--check` reports which ports are
 listening. The plugin port lives in each game's own Openplanet config, inside
 that game's Wine prefix, and is the one thing fleet.py cannot set.
+
+### Spinning up instances
+
+Each fleet instance is its own **Linux user** (`tmai01`…), its own X display and
+its own VNC port. A second uid gives isolation that a container would need GPU
+passthrough and a `/dev/uinput` bind-mount to match.
+
+**Where everything is:**
+
+    tools/instances.sh              the table: user, display, VNC, what is up
+    tools/instances.sh --vnc        just the VNC lines
+
+Example:
+
+    inst user                   display  vnc (tunnel to this)   X    steam  game
+    0    troggoman (dev, paid)  :99      127.0.0.1:5999         up   up     up
+    1    tmai01                 :100     127.0.0.1:5901         up   up     -
+    2    tmai02                 :101     127.0.0.1:5902         up   up     -
+    3    tmai03                 :102     127.0.0.1:5903         -    -      -
+
+    this box: 192.168.0.185
+
+Instance *n* is always display `:(99+n)` and VNC port `5900+n`; the dev instance
+is `:99` / `5999`.
+
+VNC binds to **localhost only**, with no password (`x11vnc -localhost`), so
+reach it over a tunnel rather than the LAN address:
+
+    ssh -L 5901:127.0.0.1:5901 <this-box>     # then connect 127.0.0.1:5901
+
+That is on purpose: an open passwordless VNC on the LAN is a remote desktop for
+anyone on the network.
+
+**Adding one, start to finish:**
+
+    sudo useradd -m -b /mnt/games/tm2020-ai-users -G input,video \
+                 -s /bin/bash tmai07          # once, per instance
+    tools/steam-instance 7 --vnc              # Steam on :106, VNC 5906
+    # -- by hand, over the tunnel: sign in to Steam, install Trackmania (free),
+    #    launch it once so the Wine prefix exists, set the plate to TAS
+    tools/sync-maps.sh 7                      # copy the local maps in
+    tools/frame-cap.sh 60 7                   # (steam-instance already did this)
+
+Creating the Steam and Ubisoft accounts, and linking them on the web, stays
+manual. A scripted signup or login loop is indistinguishable from credential
+stuffing from Ubisoft's side and is the single thing most likely to get a batch
+of accounts banned.
+
+**There is no Ubisoft login to do.** Which player an instance is, is decided by
+its **Steam** account: link a Ubisoft account to that Steam account once, on the
+web (account.ubisoft.com → Account Information → Linked Accounts → Steam), and
+Ubisoft Connect inside the prefix authenticates off the Steam ticket and never
+renders a login screen. `settings.yaml` in the prefix confirms it — `username:
+""`, because no Ubisoft credential is stored or asked for. That is also why
+Ubisoft Connect's login was never the black-window problem: it never runs.
+
+So "use a different account on this instance" means **a different Steam
+account**, not a different launcher login. One Ubisoft account per Steam
+account, and one signed-in session each:
+
+- Signing a fleet instance's Steam into an account that is signed in elsewhere
+  **logs the other one out.** Your desktop Steam and the dev instance on `:99`
+  both use your main account, so pointing a fleet instance at it takes the dev
+  instance down with it.
+- The `UBISOFT CONNECT` button on the game's main menu is the overlay, not an
+  account switcher.
+- Prefer a fresh Steam account per instance over re-linking an existing one.
+  Ubisoft rate-limits unlinking, and a Steam account that has already claimed
+  the free game does not let go of it cleanly.
+
+**Four controllers per instance.** The game tells splitscreen seats apart by
+*controller*, so each seat needs its own uinput pad:
+
+    tools/fleet.py --games 3 --seats 4        # 12 cars across 3 games
+    tools/fleet.py --games 3 --seats 4 --check
+
+    game 0: pads 8765 8775 8785 8795   broker 8767
+    game 1: pads 8900 8910 8920 8930   broker 8777
+    game 2: pads 8940 8950 8960 8970   broker 8787
+
+One broker per **game**, not per seat — all four seats read their own entry out
+of the same telemetry stream. `--instance` on each pad is globally unique
+(`game*4 + seat`), because it picks the uinput device's USB product id and two
+devices sharing an id is exactly how the game loses track of which seat is
+which.
+
+Splitscreen is also the *cheap* axis: four cars in one game share one render
+context and one ~2.7 GB VRAM allocation, where four separate games cost four of
+everything. It is also the only way a **Starter Access** account can start a map
+off local disk (see RAM.md), so it is not merely a throughput trick. The cost:
+one restart resets every seat in that game at once.
+
+**Re-run `tools/calibrate_seats.py` every session.** The game binds seats to
+controllers in whatever order it enumerated them, and that order changes when
+the pads or the game restart. A measured run had pad1 driving car3 — two seats
+steering a car they could not see.
+
+### Frame rate is the control rate
+
+Measured on the dev instance, 2026-09-07: the game re-reads the gamepad, and
+republishes the vehicle struct `env/ram_state.py` reads, **once per rendered
+frame**. Not at 100 Hz. The physics almost certainly does step at 100 Hz
+underneath — that is what TICK's 10 ms ticks are — but the state we can *see*
+and the inputs it *takes* are frame-paced.
+
+| | gamepad re-read | struct updated | clock step | VRAM | GPU | CPU |
+|---|---|---|---|---|---|---|
+| high quality, uncapped | 37/s | 41/s | 24 ms | 2785 MiB | 30% | 133% |
+| high quality, cap 20 | 20/s | 19/s | 50 ms | — | 22% | 110% |
+| **lowest quality, cap 60** | **43/s** | **47/s** | **20–25 ms** | **1993 MiB** | **14%** | **160%** |
+
+So a frame cap sets the control rate and the observation rate 1:1, and
+`control_hz` is **40**. Capping *at* 40 is possible (`MaxFps` in the game's own
+config, or `dxvk.maxFrameRate`) but leaves zero margin — frame pacing jitter
+then hands some env steps a repeated observation. 60 is the ceiling we set; at
+lowest quality the game settles at ~45 fps on its own, which is the margin.
+**Anything below ~45 throws away policy decisions.**
+
+Two levers, and they pull in opposite directions:
+
+    tools/frame-cap.sh 60           dxvk.conf beside Trackmania.exe
+    tools/gfx-low.py                lowest quality, every instance
+    tools/gfx-low.py --res 800x450  ...and a smaller window
+    tools/gfx-low.py --restore      undo
+
+Lowest quality is the real win: **VRAM 2785 → 1993 MiB** and **GPU 30% → 14%**.
+Since VRAM is the hard per-instance ceiling, that takes an 8 GB card from two
+instances to three or four, and a 16 GB card from five to seven.
+
+But CPU went **up**, 133% → 160%, because the frames now come faster and each
+one is another main-loop iteration (`MainThread` 11% → 53%). At lowest quality
+the instance is no longer GPU-bound; it is CPU/present-bound at ~45 fps, and the
+60 cap never binds. So on the server, plan against **cores**, not the GPU.
+
+`tools/gfx-low.py` copies the game's own `DisplaySafe` profile over `Display`
+rather than guessing enum spellings — TM2020 ships both in `Default.json`, and
+`DisplaySafe` already is the lowest setting of every knob. It also turns off
+`Automatic_Enabled`, which otherwise raises quality back up on its own to chase
+`Automatic_MinFps`, and switches off audio and the menu attract demo. **The game
+must be closed** for that instance: Trackmania rewrites `Default.json` from
+memory on exit, so an edit made while it runs is clobbered — the same trap
+`tools/op-mode.sh` documents for Openplanet's `Settings.ini`. The script refuses
+to touch a running instance.
+
+The DXVK cap goes in a `dxvk.conf` beside `Trackmania.exe`, not in
+`DXVK_FRAME_RATE`: the default launch path goes through the Steam *client*
+(`steam://rungameid/...`), so environment set in our shell never reaches the
+game.
 
 ### Packaging: `.op`, not a folder
 

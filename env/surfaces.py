@@ -90,6 +90,30 @@ GROUP_OF_ID = [
     GROUP_NAMES.index(GROUPS.get(name, "other")) for name in MATERIALS
 ]
 
+# Approximate grip per group, relative to dry road = 1.0.
+#
+# Not a physics model - a number for deciding HOW EARLY TO BRAKE. The figures
+# are the ones already documented against _BY_GROUP above (wood ~100%, plastic
+# ~30%, ice ~20%, wet asphalt about a quarter of dry, from the "4x too high"
+# note), plus the ratio implied by env.speedslide's slide limits: road starts
+# sliding at 400 km/h where grass and dirt go at 200.
+#
+# `other` is deliberately below road. An unrecognised material should brake a
+# little early rather than sail off the outside of a corner.
+GROUP_GRIP: dict[str, float] = {
+    "wood": 1.0,
+    "road": 1.0,
+    "metal": 1.0,
+    "dirt": 0.55,
+    "grass": 0.45,
+    "plastic": 0.30,
+    "wet": 0.25,
+    "ice": 0.20,
+    "other": 0.60,
+}
+# Index-aligned with GROUP_NAMES so the hot path never does a dict lookup.
+GRIP_OF_GROUP = tuple(GROUP_GRIP[g] for g in GROUP_NAMES)
+
 # Materials worth showing in the tuning UI. The full list is 81 entries, most
 # of which are ShootMania leftovers you will never drive on.
 TUNABLE = ("Concrete", "Asphalt", "Pavement", "Plastic", "RoadSynthetic",

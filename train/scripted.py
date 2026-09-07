@@ -36,6 +36,7 @@ from __future__ import annotations
 import numpy as np
 
 from env.hints import Hint, Tapper
+from env.surfaces import GRIP_OF_GROUP, N_GROUPS
 from env.tm_env import LOOKAHEAD, OBS_GROUPS
 
 # Group -> (start, length) in the observation vector.
@@ -91,6 +92,28 @@ def _tap(obs: np.ndarray, hints: list, env_index: int, step_ms: float) -> bool:
     return False
 
 
+def surface_grip(obs: np.ndarray) -> float:
+    """Mean grip under the four wheels. 1.0 = dry road, ~0.2 = ice.
+
+    The `surface` group is a per-wheel one-hot, packed wheel-major as
+    ``onehot[w * N_GROUPS + group]``, so it reshapes to (4, N_GROUPS).
+
+    A wheel with no material reported reads as an all-zero row, and argmax on
+    that would silently return group 0 - "wood", the grippiest thing there is,
+    which is the worst possible default for a braking decision. Those rows are
+    scored as "other" instead.
+
+    Icing multiplies rather than replaces: iced wheels slide on ANY surface, so
+    an iced road is not a road.
+    """
+    rows = _group(obs, "surface").reshape(4, N_GROUPS)
+    grips = [GRIP_OF_GROUP[int(np.argmax(r))] if r.sum() > 0.5
+             else GRIP_OF_GROUP[-1]            # GROUP_NAMES[-1] == "other"
+             for r in rows]
+    icing = float(np.clip(np.mean(_group(obs, "icing")), 0.0, 1.0))
+    return float(np.clip(np.mean(grips) * (1.0 - 0.75 * icing), 0.05, 1.0))
+
+
 def drive(obs: np.ndarray, mode: str = "pursuit",
           steer_gain: float = 2.0, brake_above: float = 0.55,
           hints: list | None = None, env_index: int = 0,
@@ -126,7 +149,21 @@ def drive(obs: np.ndarray, mode: str = "pursuit",
     speed = float(_group(obs, "speed")[0]) * 100.0
     far = pts[min(3, len(pts) - 1)]
     curve = abs(np.arctan2(far[1], max(far[0], 1.0)))
-    hard = curve > brake_above and speed > 30.0
+    # Both thresholds are referenced to DRY ROAD and scaled by what the tyres
+    # are actually on. The fixed `speed > 30.0` was a tarmac number: on the ice
+    # map the cars were leaving the deck at 29.6 m/s, just under it, so the
+    # driver never braked once in 41 episodes and every car flew off the first
+    # 90-degree corner onto the ground 18 m below.
+    #
+    # Cornering speed goes as sqrt(grip) (v^2 = mu*g*r), so the speed gate gets
+    # sqrt; the curvature gate is scaled more gently, because on low grip you
+    # also want to brake for corners that would be nothing on tarmac.
+    #
+    # grip == 1.0 reproduces the old numbers EXACTLY (0.55 and 30.0), so road,
+    # wood and metal maps are unchanged.
+    grip = surface_grip(obs)
+    hard = (curve > brake_above * (0.35 + 0.65 * grip)
+            and speed > 30.0 * float(np.sqrt(grip)))
     brake = hard or tapping
     return np.array([steer, -1.0 if hard else 1.0, 1.0 if brake else -1.0],
                     dtype=np.float32)

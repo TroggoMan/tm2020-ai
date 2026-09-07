@@ -108,11 +108,25 @@ class Centerline:
         return j, float(self.s[j]), off
 
     def lookahead(self, index: int, distances) -> np.ndarray:
-        """World-space points on the line at the given distances ahead."""
+        """World-space points on the line at the given distances ahead.
+
+        Past the end, points continue along the final tangent. np.interp
+        CLAMPS, so approaching the finish every lookahead point piled onto the
+        last one: the aim stopped moving forward and the car lifted and
+        coasted into the gate. Extrapolating fixes that without putting fake
+        points in the line itself - which is what roadtrace's run-out did, and
+        it kinked the geometry at the finish.
+        """
         s_target = self.s[index] + np.asarray(distances, dtype=np.float64)
         out = np.empty((len(s_target), 3))
         for axis in range(3):
             out[:, axis] = np.interp(s_target, self.s, self.points[:, axis])
+        over = s_target - self.s[-1]
+        if len(self.points) >= 2 and np.any(over > 0):
+            tan = self.points[-1] - self.points[-2]
+            tan = tan / (np.linalg.norm(tan) or 1.0)
+            past = over > 0
+            out[past] = self.points[-1] + np.outer(over[past], tan)
         return out
 
     def save(self, path: str, map_uid: str | None = None) -> None:

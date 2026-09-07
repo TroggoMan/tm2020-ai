@@ -40,6 +40,25 @@ getent passwd "$USER_NAME" >/dev/null || {
   exit 1
 }
 
+# Frame cap for this instance's game, if it is installed yet. Control and
+# observation are frame-locked to the render rate (tools/frame-cap.sh), so this
+# is a ceiling rather than a throttle. TMAI_FPS_CAP=off to skip.
+if [[ "${TMAI_FPS_CAP:-60}" != off ]]; then
+  "$(dirname "${BASH_SOURCE[0]}")/frame-cap.sh" "${TMAI_FPS_CAP:-60}" "$INSTANCE" \
+    2>/dev/null | sed 's/^/  fps: /' || true
+fi
+
+# Steam's launch wrapper needs XDG_RUNTIME_DIR, and `sudo -u` does not give it
+# one - these users have no login session. Without it the client starts but
+# every `steam://rungameid/...` is silently DROPPED: no game, no error, and
+# nothing in Openplanet.log. That cost three "the game just exits" launches.
+# Also note: if a game was killed rather than closed, Steam keeps believing it
+# is running and ignores further launch URLs - restart the client, do not retry.
+RUNTIME_DIR="/run/user/$(id -u "$USER_NAME")"
+if [ ! -d "$RUNTIME_DIR" ]; then
+  sudo install -d -o "$USER_NAME" -g "$USER_NAME" -m 700 "$RUNTIME_DIR"
+fi
+
 if [[ "$MODE" == "--vnc" ]]; then
   # Its own X server, so N instances cannot steal each other's focus and the
   # whole fleet can run with nobody logged in at the console.
@@ -68,10 +87,10 @@ if [[ "$MODE" == "--vnc" ]]; then
   fi
   echo "instance $INSTANCE: display :$DISP, VNC on 127.0.0.1:$VNC_PORT"
   echo "  view it with:  vncviewer 127.0.0.1:$VNC_PORT"
-  exec sudo -u "$USER_NAME" env DISPLAY=":$DISP" steam
+  exec sudo -u "$USER_NAME" env DISPLAY=":$DISP" XDG_RUNTIME_DIR="$RUNTIME_DIR" steam
 fi
 
 # On the main display. Needs the desktop session to allow this uid:
 #   xhost +si:localuser:$USER_NAME
 echo "instance $INSTANCE: Steam as $USER_NAME on ${DISPLAY:-:0}"
-exec sudo -u "$USER_NAME" env DISPLAY="${DISPLAY:-:0}" steam
+exec sudo -u "$USER_NAME" env DISPLAY="${DISPLAY:-:0}" XDG_RUNTIME_DIR="$RUNTIME_DIR" steam

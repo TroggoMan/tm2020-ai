@@ -21,6 +21,47 @@ that outcome doesn't gate progress:
 - **denied** → the adapter is permanent; a second paid account (~£20) becomes a
   *targeted* buy for explore + lidar on a second track, not a blocker.
 
+## UPDATE 2026-09-07: two of the constraints above have moved
+
+**RL Connect WORKS ON THE PAID INSTANCE, 2026-09-07 (not yet on a free one)** - the "signed, confirmed
+loading in School mode" claim below had never actually been tested, and the
+copy on tmai01 was hand-placed, unsigned and hash-invalid. Installed properly
+through the Plugin Manager on the PAID instance (with MLHook 252,
+MLFeedRaceData 255, PlayerState 191) it loads clean and serves 60 Hz on :9000
+with per-wheel materials, per-wheel slip, adherence, airborne time and a
+working checkpoint count. STILL UNTESTED: the same install on a FREE account,
+which is the only part that matters for the fleet.
+
+**Telemetry is solved without any plugin.** `env/ram_state.py` +
+`telemetry/ram_adapter.py` read the vehicle struct out of `/proc/<pid>/mem` and
+re-serve it in this document's own schema. Proven on tmai01's free Starter
+account with no Openplanet plugin of ours loaded. Everything the "what survives"
+table below calls a *direct from stream* field is available, plus the applied
+inputs, suspension travel and per-wheel ground contact. `tools/stack.sh
+up --school` now takes that path by default; `--school-sac` keeps the
+SAC_GetData route. Details and the honest gaps: **RAM.md**.
+
+That makes the Openplanet signing exception irrelevant to the fleet. It is still
+worth having for lidar/fx_ahead on a second *privileged* instance, but it no
+longer gates RACE_BULK.
+
+**A harder constraint took its place, and it is not about plugins.** A Starter
+account cannot play a **local custom track**: `PLAY → LOCAL → PLAY A TRACK`
+opens the Trackmania Access upsell. Local maps need **Club Access**, paid, per
+account. Free instances can drive **Campaign, Weekly Tracks and Track of the
+Day** only.
+
+RACE_BULK as described below assumes the fleet races *our* explored line on *our*
+map. On free accounts it cannot. The options are:
+
+1. **Train on campaign tracks.** Every free account has the current seasonal
+   campaign, identical across accounts, and the driver already trains on a
+   Summer 2026 track. SURVEY/EXPLORE still run on the privileged instance; the
+   fleet races the same official map. This costs nothing and is the default
+   assumption until someone decides otherwise.
+2. **Club Access per fleet account.** Restores custom maps, and reintroduces a
+   per-account subscription - the exact thing v2 exists to avoid.
+
 ## The way round: SAC_GetData
 
 `SAC_GetData` / "TrackmaniaRL Connect" (siteid 421) is **signed**, confirmed

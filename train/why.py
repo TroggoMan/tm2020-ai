@@ -34,7 +34,14 @@ ARCHIVE_DIR = "why-archive"
 METRICS = ("train/ent_coef", "train/actor_loss", "train/critic_loss",
            "train/ent_coef_loss")
 
-WINDOW = 20      # episodes of history the trend rules look back over
+# Episodes of history the trend rules look back over.
+#
+# 20 was too short to say anything true during a warm-up: at four seats it is
+# barely a minute of driving, so "20 of the last 20 ended stuck" fired
+# constantly while the scripted bootstrap was still filling the buffer, and
+# read as a verdict when it was noise. 100 is long enough that a run of
+# failures has to persist before the log calls it a pattern.
+WINDOW = 100
 MIN_HISTORY = 6  # below this, say nothing rather than guess from noise
 
 

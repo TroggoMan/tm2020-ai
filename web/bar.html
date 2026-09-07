@@ -65,7 +65,11 @@ const Q = new URLSearchParams(location.search);
 if (Q.get('solid')) document.body.classList.add('solid');
 if (Q.get('fs')) document.documentElement.style.setProperty('--fs', Q.get('fs') + 'px');
 const EVERY  = Math.max(1000, +(Q.get('ms') || 3000));
-const WINDOW = Math.max(5, +(Q.get('win') || 20));   // episodes for the rates
+// Episodes the per-checkpoint rates are computed over, so the cp cells read
+// "n/100". 20 was too short to mean anything on stream - one bad minute took
+// a cell from 80% to 0% - and it matches train/why.py's WINDOW. Override per
+// URL with ?win=N if a shorter or longer read is wanted.
+const WINDOW = Math.max(5, +(Q.get('win') || 100));  // episodes for the rates
 // What we are training, in words. The model filename is an artefact name, not
 // an answer to "what is this learning" - so the headline is a label you set
 // once in the OBS source URL, and the filename drops to the sub-line where it

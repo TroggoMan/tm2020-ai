@@ -586,6 +586,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self._respawn_presses = 0
         self._respawn_warned = False
         self._respawn_stuck_warned = False
+        self._rogue_respawn_warned = False
         self._forced_restart_at = 0.0
         self.start_s = 0.0
         self.max_s = 0.0
@@ -2441,6 +2442,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self._respawn_presses = 1
         self._respawn_warned = False
         self._respawn_stuck_warned = False
+        self._rogue_respawn_warned = False
         self._forced_restart_at = 0.0
         # A clean sector attempt respawns to its entry checkpoint instead of
         # giving up to the start line. Patching only the early-press site left
@@ -2547,8 +2549,35 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.not_ready_steps += 1
 
         if self._respawn_landed(rec):
+            # _respawn_landed() only checks the clock and a 3s grace period -
+            # it does not check WHERE the car actually is. A rogue respawn
+            # (car slid/wedged somewhere far off, or the clock reset before
+            # the position caught up) looks "landed" here and then blows the
+            # far-from-line guard inside _start_episode(). That guard exists
+            # to catch a reference line recorded on the wrong map, which is
+            # a startup-only problem - reset() still raises it uncaught, on
+            # purpose. Mid-run it means one wedged car, not a wrong map, and
+            # a raise here kills this SubprocVecEnv worker -> EOFError on the
+            # pipe -> the ENTIRE training run goes down over one seat.
+            # Fold it back into the same "keep pressing give-up, let the
+            # other seats carry on, escalate to a full restart eventually"
+            # loop this function already runs for "never landed" - don't
+            # flip self._respawning off, so the next tick just tries again.
+            try:
+                obs, _info = self._start_episode(rec)
+            except RuntimeError as e:
+                if not self._rogue_respawn_warned:
+                    self._rogue_respawn_warned = True
+                    print(f"  seat {self.slot}: respawn looked landed but "
+                          f"the car is nowhere near the line - {e}\n"
+                          f"  treating this as still stuck rather than "
+                          f"crashing the run; will keep pressing give-up "
+                          f"and escalate to a full restart if it doesn't "
+                          f"clear.", flush=True)
+                return (self._last_obs, 0.0, False, False,
+                        {"not_ready": True, "instance": self.instance})
             self._respawning = False
-            obs, _info = self._start_episode(rec)
+            self._rogue_respawn_warned = False
             self._last_obs = obs
             return obs, 0.0, False, False, {"not_ready": True,
                                             "instance": self.instance}
@@ -3171,9 +3200,26 @@ class TrackmaniaEnv(gym.Env if gym else object):
             # going once. Every episode starts stationary on the line, so
             # counting from step 0 killed the episode before the car could
             # possibly accelerate.
-            if speed >= self.stuck_speed:
+            # STUCK MUST MEAN "NOT MOVING", AND ON ICE THAT IS NOT THE SAME AS
+            # "NO FORWARD SPEED". `speed` is the plugin's FrontSpeed - the
+            # forward component alone - so a car in a big lateral slide reads
+            # ~0 while actually travelling sideways at 15 m/s, and the detector
+            # killed the episode after stuck_seconds while it was mid-slide.
+            # Ice-platform maps are made of those slides.
+            #
+            # Ground speed is the honest test of "is it moving". Whether the
+            # slide is going anywhere USEFUL is a different question, and the
+            # no_progress_m check below already answers it against arc length -
+            # which is also why hypot's sign-insensitivity is right here: a car
+            # reversing to recover a corner is moving, and that block is the
+            # one documented to let it.
+            ground_speed = math.hypot(
+                float(speed or 0.0),
+                float(rec.get("side_speed", 0.0) or 0.0))
+            if ground_speed >= self.stuck_speed:
                 self.moved = True
-            self.slow_for = self.slow_for + 1 if speed < self.stuck_speed else 0
+            self.slow_for = (self.slow_for + 1
+                             if ground_speed < self.stuck_speed else 0)
             if self.moved and self.slow_for >= self.stuck_steps:
                 parts["stuck"] = -self.stuck_penalty
                 terminated = True

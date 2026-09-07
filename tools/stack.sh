@@ -5,8 +5,9 @@
 #   plumbing   pad servers + broker + web panel   (was: tm2020-sacAI)
 #   dev game   paid account, Developer mode, headless :99, TMAITelemetry
 #              plugin, map autoloaded              (was: tools/headless-main.sh)
-#   school     free account (tmai01), School mode, headless :100, the signed
-#              SAC_GetData plugin + our adapter    (EXPERIMENTAL - see below)
+#   school     free account (tmai01), School mode, headless :100, telemetry
+#              read straight out of the game's RAM - no Openplanet plugin at
+#              all (RAM.md). --school-sac uses the old signed-plugin route.
 #
 # USAGE
 #   tools/stack.sh up                 plumbing + dev game. The usual thing.
@@ -25,6 +26,9 @@
 #   --no-panel     skip the web panel
 #   --no-dev       skip the dev game (plumbing only, or plumbing + --school)
 #   --school       also bring up the School-mode instance
+#   --school-sac   read that instance through the SIGNED SAC_GetData plugin
+#                  instead of straight out of its RAM. The RAM reader is the
+#                  default because it needs NO plugin at all - see RAM.md.
 #
 # Every wait below says WHAT it is waiting for and WHY, and counts up in
 # seconds - so a slow step (Steam cold start, first-launch shader cache build,
@@ -104,7 +108,7 @@ sys_python() {   # the interpreter that can see evdev + make uinput devices
 
 # ============================================================================ up
 do_up() {
-  local SEATS=4 WANT_PANEL=1 WANT_DEV=1 WANT_SCHOOL=0
+  local SEATS=4 WANT_PANEL=1 WANT_DEV=1 WANT_SCHOOL=0 SCHOOL_SRC=ram
   local MAP="My Maps/Wide left, mid right - road.Map.Gbx"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -113,6 +117,7 @@ do_up() {
       --no-panel) WANT_PANEL=0; shift ;;
       --no-dev)  WANT_DEV=0; shift ;;
       --school)  WANT_SCHOOL=1; shift ;;
+      --school-sac) WANT_SCHOOL=1; SCHOOL_SRC=sac; shift ;;
       *) bad "unknown option for up: $1"; exit 2 ;;
     esac
   done
@@ -193,7 +198,7 @@ do_up() {
 
   # -- school instance ----------------------------------------------------------
   if [ "$WANT_SCHOOL" = 1 ]; then
-    school_up "$WANT_DEV"
+    school_up "$WANT_DEV" "$SCHOOL_SRC"
   fi
 
   # -- summary ----------------------------------------------------------------
@@ -214,12 +219,19 @@ do_up() {
 # prints exactly what to do by hand and returns without killing the rest of the
 # stack.
 school_up() {
-  local dev_is_up="${1:-0}"
-  local U=tmai01 DISP=:100 VNC=5901 PLUGPORT=8776   # :100 / 5901 = steam-instance's convention (5900 + N)
-  hd "School-mode instance - $U on $DISP   (EXPERIMENTAL)"
-  why "a free account can run the SIGNED SAC_GetData data plugin but not the"
-  why "unsigned TMAITelemetry. The adapter reads SAC_GetData's binary stream"
-  why "on :9000 and re-serves it in our telemetry schema on :$PLUGPORT."
+  local dev_is_up="${1:-0}" src="${2:-ram}"
+  local U=tmai01 DISP=:100 VNC=5901 PLUGPORT=8776 SCHOOL_PAD=8775   # :100 / 5901 = steam-instance's convention (5900 + N)
+  hd "School-mode instance - $U on $DISP   (telemetry: $src)"
+  if [ "$src" = ram ]; then
+    why "a free account cannot load our unsigned plugin, so we do not ask it to:"
+    why "telemetry/ram_adapter.py reads the vehicle struct out of the game's own"
+    why "memory and re-serves it on :$PLUGPORT in the plugin's schema. No"
+    why "Openplanet plugin of any kind is involved."
+  else
+    why "a free account can run the SIGNED SAC_GetData data plugin but not the"
+    why "unsigned TMAITelemetry. The adapter reads SAC_GetData's binary stream"
+    why "on :9000 and re-serves it in our telemetry schema on :$PLUGPORT."
+  fi
 
   getent passwd "$U" >/dev/null || { bad "no user $U - skipping school"; return 0; }
   local UHOME; UHOME="$(getent passwd "$U" | cut -d: -f6)"
@@ -233,7 +245,7 @@ school_up() {
     return 0
   fi
 
-  if port_up 9000 && [ "$dev_is_up" = 1 ]; then
+  if [ "$src" = sac ] && port_up 9000 && [ "$dev_is_up" = 1 ]; then
     bad "port 9000 is already taken by the dev game's SAC_GetData."
     info "two games on ONE host collide on 9000. Run the school boy on another"
     info "machine, or bring the stack up with --no-dev. Skipping school."
@@ -269,18 +281,39 @@ school_up() {
     bad "school Steam never came up - see logs/school-steam.log"; return 0; }
   sudo -u "$U" env DISPLAY="$DISP" WAYLAND_DISPLAY= \
     setsid steam "steam://rungameid/2225070" >>"$LOGDIR/school-steam.log" 2>&1 &
-  wait_for 300 "school game - SAC_GetData :9000" -- port_up 9000 || {
-    bad "SAC_GetData never opened :9000 - enable the plugin in $U's Openplanet"
-    info "  (Openplanet > Plugins > SAC_GetData), then re-run with --school."
-    return 0; }
+  if [ "$src" = sac ]; then
+    wait_for 300 "school game - SAC_GetData :9000" -- port_up 9000 || {
+      bad "SAC_GetData never opened :9000 - enable the plugin in $U's Openplanet"
+      info "  (Openplanet > Plugins > SAC_GetData), then re-run with --school."
+      return 0; }
 
-  hd "SAC_GetData adapter   :9000  ->  :$PLUGPORT"
-  why "presents the free account's telemetry on a plugin-shaped port so the"
-  why "trainer treats it like any other instance."
-  "$ROOT/.venv/bin/python" telemetry/sac_getdata_adapter.py --serve-port "$PLUGPORT" \
-    >"$LOGDIR/sac-adapter.log" 2>&1 &
+    hd "SAC_GetData adapter   :9000  ->  :$PLUGPORT"
+    why "presents the free account's telemetry on a plugin-shaped port so the"
+    why "trainer treats it like any other instance."
+    "$ROOT/.venv/bin/python" telemetry/sac_getdata_adapter.py --serve-port "$PLUGPORT" \
+      >"$LOGDIR/sac-adapter.log" 2>&1 &
+    track adapter $!
+    wait_for 20 "adapter :$PLUGPORT" -- port_up "$PLUGPORT"
+    return 0
+  fi
+
+  # -- RAM path -------------------------------------------------------------
+  # There is no port to wait on: nothing in the game announces itself. Wait for
+  # the process instead.
+  wait_for 300 "school game process" -- pgrep -u "$U" -f 'Trackmania' || {
+    bad "the school game never started - see logs/school-steam.log"; return 0; }
+
+  hd "RAM telemetry adapter   $U's game  ->  :$PLUGPORT"
+  why "reading another user's /proc/<pid>/mem needs CAP_SYS_PTRACE, so this one"
+  why "runs under sudo. It is the ONLY part of the stack that does, and it only"
+  why "ever reads. Passwordless sudo for this command keeps 'up' unattended."
+  sudo -n "$ROOT/.venv/bin/python" telemetry/ram_adapter.py \
+      --serve-port "$PLUGPORT" --pad-port "$SCHOOL_PAD" --display "$DISP" \
+      --user "$U" \
+      >"$LOGDIR/ram-adapter.log" 2>&1 &
   track adapter $!
-  wait_for 20 "adapter :$PLUGPORT" -- port_up "$PLUGPORT"
+  info "locating the vehicle struct takes ~1 min and drives the car to do it"
+  wait_for 240 "adapter :$PLUGPORT" -- port_up "$PLUGPORT"
 }
 
 # ============================================================================ down

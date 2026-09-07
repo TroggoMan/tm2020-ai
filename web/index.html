@@ -2680,6 +2680,40 @@ const RE = {
       const px = Math.max(1, this.view.scale * 32);
       ctx.fillRect(s[0] - px / 2, s[1] - px / 2, px, px);
     }
+    // DIRECTION is the thing this canvas most needs to show. A patch drawn
+    // back-to-front splices in back-to-front and sends the car the wrong way
+    // down the whole route - and with every patch drawn in one flat colour and
+    // no arrows, nothing here said so. That cost a training run to find by
+    // reading the JSON by hand, which is exactly what this canvas exists to
+    // avoid. Chevrons point the way travel goes; a patch that opposes the base
+    // line is drawn red and labelled.
+    const chevrons = (pts, col, everyPx) => {
+      if (!pts || pts.length < 2) return;
+      const step = everyPx || 46;
+      ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      let dist = 0, next = step * 0.5;
+      for (let i = 1; i < pts.length; i++) {
+        const a = this.T(pts[i - 1][0], pts[i - 1][1]);
+        const b = this.T(pts[i][0], pts[i][1]);
+        const dx = b[0] - a[0], dy = b[1] - a[1], seg = Math.hypot(dx, dy);
+        if (seg < 0.01) continue;
+        const ux = dx / seg, uy = dy / seg;
+        while (next <= dist + seg) {
+          const t = (next - dist) / seg;
+          const cx = a[0] + dx * t, cy = a[1] + dy * t;
+          const w = 5, h = 4.5;
+          ctx.beginPath();
+          ctx.moveTo(cx - ux * w - uy * h, cy - uy * w + ux * h);
+          ctx.lineTo(cx + ux * w, cy + uy * w);
+          ctx.lineTo(cx - ux * w + uy * h, cy - uy * w - ux * h);
+          ctx.stroke();
+          next += step;
+        }
+        dist += seg;
+      }
+      ctx.lineCap = 'butt';
+    };
+
     // base line
     const L = this.data.points || [];
     if (L.length > 1) {
@@ -2690,7 +2724,31 @@ const RE = {
         i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); });
       ctx.stroke();
       ctx.lineWidth = 2; ctx.strokeStyle = '#2ea9c9'; ctx.stroke();
+      chevrons(L, '#7fd7e8', 46);
+      const e0 = this.T(L[0][0], L[0][1]);
+      const e1 = this.T(L[L.length - 1][0], L[L.length - 1][1]);
+      ctx.font = 'bold 11px ui-monospace, monospace';
+      ctx.fillStyle = '#7fd7e8';
+      ctx.fillText('LINE START', e0[0] + 9, e0[1] + 15);
+      ctx.fillText('LINE END', e1[0] + 9, e1[1] + 15);
     }
+
+    // Local direction of the base line nearest a point, so a patch can be
+    // compared against the stretch it is actually replacing rather than
+    // against the route as a whole (which says nothing on a track that
+    // doubles back).
+    const baseDirAt = (p) => {
+      if (L.length < 2) return null;
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < L.length; i++) {
+        const d = (L[i][0] - p[0]) ** 2 + (L[i][1] - p[1]) ** 2;
+        if (d < bd) { bd = d; best = i; }
+      }
+      const j = Math.min(best + 1, L.length - 1);
+      const k = (j === best) ? Math.max(0, best - 1) : best;
+      return [L[j][0] - L[k][0], L[j][1] - L[k][1]];
+    };
+
     // saved patches
     const drawPoly = (pts, col, dash) => {
       ctx.setLineDash(dash || []);
@@ -2702,10 +2760,41 @@ const RE = {
       pts.forEach(p => { const s = this.T(p[0], p[1]);
         ctx.beginPath(); ctx.arc(s[0], s[1], 4, 0, 7); ctx.fill(); });
     };
-    this.patches.forEach(p => drawPoly(p.points,
-      p.kind === 'jump' ? '#e3b341' : '#3fb950',
-      p.kind === 'jump' ? [7, 6] : []));
-    if (this.draft) drawPoly(this.draft.points, '#f0f6fc', [4, 4]);
+    this.patches.forEach((p, idx) => {
+      const pts = p.points || [];
+      if (!pts.length) return;
+      const a = pts[0], b = pts[pts.length - 1];
+      const bd = pts.length > 1
+        ? baseDirAt(pts[Math.floor(pts.length / 2)]) : null;
+      const pd = [b[0] - a[0], b[1] - a[1]];
+      const rev = !!bd && (pd[0] * bd[0] + pd[1] * bd[1]) < 0;
+      // Path length against the straight line between the ends. A scribble
+      // that covers 5x its own span is a mis-drawn patch, not a racing line.
+      let plen = 0;
+      for (let k = 1; k < pts.length; k++)
+        plen += Math.hypot(pts[k][0] - pts[k - 1][0],
+                           pts[k][1] - pts[k - 1][1]);
+      const direct = Math.hypot(pd[0], pd[1]);
+      const wander = direct > 1 ? plen / direct : 1;
+      const col = rev ? '#f85149'
+                      : (p.kind === 'jump' ? '#e3b341' : '#3fb950');
+      drawPoly(pts, col, p.kind === 'jump' ? [7, 6] : []);
+      chevrons(pts, col, 34);
+      // start of the patch gets a ring so "which end is the start" is visible
+      const s = this.T(a[0], a[1]);
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s[0], s[1], 7, 0, 7); ctx.stroke();
+      ctx.font = 'bold 11px ui-monospace, monospace';
+      ctx.fillStyle = col;
+      ctx.fillText(`#${idx} ${Math.round(plen)}m`
+                   + (wander > 1.6 ? ` ${wander.toFixed(1)}x wander` : '')
+                   + (rev ? '  ⚠ REVERSED' : ''),
+                   s[0] + 10, s[1] - 9);
+    });
+    if (this.draft) {
+      drawPoly(this.draft.points, '#f0f6fc', [4, 4]);
+      chevrons(this.draft.points, '#f0f6fc', 34);
+    }
     // landmarks
     const mark = (p, col, r, sq) => {
       const s = this.T(p[0], p[1]);
