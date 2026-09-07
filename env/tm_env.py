@@ -1832,6 +1832,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
         elif self.line is not None and self._track_hw is None:
             self._adopt_track_geometry(uid)
 
+        self._add_finish_runout()
+
         # `map_ready` is gated on dumpmap returning blocks and NOTHING ELSE.
         # MapLandmarks (spawn / checkpoints / finish) populate before the
         # block model is built, so a "we have gates, the map must be loaded"
@@ -1840,6 +1842,49 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # had a checkpoint. The block count is the only signal that the
         # geometry the occupancy dump needs is actually there.
         return map_ready
+
+    def _add_finish_runout(self) -> None:
+        """Show the lidar road past the finish, so the car does not lift.
+
+        Almost no map has run-out built past the finish gate - the road just
+        stops. The beams measure "how far until the ground runs out", so on
+        the approach they shorten exactly as they do at a cliff edge, and the
+        policy brakes. That is not a reward bug and no size of finish bonus
+        argues with it: the car has learned, correctly, that ground running
+        out ahead means slow down, and here its own eyes are telling it so.
+
+        The episode ends on the finish plane, so nothing past the gate has to
+        exist - it only has to be VISIBLE, and only far enough that the end is
+        never inside beam range. `line.finish_runout_m` defaults to 300 against
+        a 256 m range; a shorter one only moves the lift later.
+
+        The cells are virtual: `OccupancyGrid.add_runout` puts them in the
+        solid set but not in `cells`, so `maps/<uid>.json` stays an honest
+        record of the survey.
+        """
+        if self.lidar is None or self.line is None:
+            return
+        metres = float(self.cfg.get("line", "finish_runout_m", 300.0) or 0.0)
+        if metres <= 0 or getattr(self, "_runout_done", False):
+            return
+        pts = np.asarray(self.line.points, dtype=np.float64)
+        if len(pts) < 2:
+            return
+        # The line's own exit tangent, so a run-out off a curved finish
+        # continues the curve rather than veering across it. Averaged over the
+        # last few samples: a single segment is short enough that resampling
+        # noise swings the heading.
+        tail = pts[-min(5, len(pts)):]
+        direction = tail[-1] - tail[0]
+        half = float(self.cfg.get("line", "finish_runout_half_width_m", 16.0))
+        added = self.lidar.grid.add_runout(pts[-1], direction, metres, half)
+        self._runout_done = True
+        if added:
+            print(f"  finish run-out: {added} virtual cells, {metres:.0f}m "
+                  f"past the line end (lidar range "
+                  f"{self.lidar.max_range:.0f}m) - so the beams do not read "
+                  f"'edge ahead' at the finish and the car does not lift",
+                  flush=True)
 
     def _adopt_track_geometry(self, uid: str | None) -> None:
         """Give a NON-rebuilt line the map's edge geometry.

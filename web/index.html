@@ -1607,6 +1607,8 @@ const FIELD = {
   'line.max_offset':       ['off-line limit (m)', 1, 'Metres from the reference line before the episode ends.'],
   'line.soft_offset':      ['free corridor (m)', 1, 'How far it may stray from the line for free. Distance, not drift.'],
   'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor.'],
+  'line.finish_runout_m':  ['finish run-out (m)', 25, 'Virtual road shown to the LIDAR past the finish, so the beams do not count down to an edge and make the car lift. 0 = off; use 300+ (beam range is 256m). Nothing is written to the map dump.'],
+  'line.finish_runout_half_width_m': ['run-out width (m)', 4, 'Half-width of that virtual corridor.'],
   'line.cp_mode':          ['checkpoint test', null, 'gate = must cross the checkpoint plane; sphere = be within N metres.'],
   'line.cp_half_width':    ['gate half-width (m)', 1, 'Half the checkpoint gate width. The block is 32m wide.'],
   'line.cp_height':        ['gate height (m)', 1, 'How far above or below the gate still counts.'],

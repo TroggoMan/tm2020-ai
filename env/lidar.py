@@ -193,6 +193,72 @@ class OccupancyGrid:
     def __len__(self) -> int:
         return len(self._solid)
 
+    def add_runout(self, start, direction, metres: float,
+                   half_width: float = 16.0) -> int:
+        """Pretend the road keeps going past the finish.
+
+        THE PROBLEM. The beams measure "how far until the ground runs out",
+        and on most maps the road simply stops at the finish gate - there is
+        no run-out built past it. So on the approach the forward beams shorten
+        exactly as they do at a cliff edge, and the policy does the sensible
+        thing with that: it slows down. It has learned, correctly and from
+        thousands of examples elsewhere on the track, that ground running out
+        ahead means brake. Nothing in the reward asks for this and no amount
+        of finish bonus argues with it, because the car is not being paid to
+        brake - it is being warned by its own eyes.
+
+        The car crosses the finish plane and the episode ends there, so what
+        is past the gate never has to be real. It only has to be VISIBLE, and
+        only for long enough that the end is never in range: the beams reach
+        `Lidar.max_range` (MAX_CELLS * 32 = 256 m), so a shorter run-out just
+        moves the lift later.
+
+        These cells go into `_solid` but NOT into `self.cells`, so `save()`
+        never writes them to `maps/<uid>.json`. The dump on disk stays an
+        honest record of the survey; this is the lidar's picture of the world,
+        which is a different thing and is allowed to be generous.
+
+        :param start: world position to grow from (the finish landmark).
+        :param direction: world heading to grow along - the reference line's
+            final tangent, so a run-out off a curved finish continues the
+            curve's exit rather than veering.
+        :param metres: how far. Use at least the lidar's max_range.
+        :param half_width: half the corridor width, metres.
+        :returns: how many cells were added.
+        """
+        d = np.asarray(direction, dtype=np.float64)
+        flat = np.array([d[0], d[2]], dtype=np.float64)
+        n = float(np.linalg.norm(flat))
+        if n < 1e-9 or metres <= 0:
+            return 0
+        flat /= n
+        perp = np.array([-flat[1], flat[0]])
+        start = np.asarray(start, dtype=np.float64)
+        # Half a cell, matching the beam march, so the corridor cannot have a
+        # gap a ray slips through diagonally.
+        step = min(self.block[0], self.block[2]) * 0.5
+        offs = np.arange(-half_width, half_width + 1e-9, step)
+        new = set()
+        for k in range(int(metres / step) + 1):
+            centre = start[[0, 2]] + flat * (k * step)
+            for o in offs:
+                p2 = centre + perp * o
+                cx, cy, cz = self.world_to_cell(
+                    np.array([p2[0], start[1], p2[1]]))
+                if cx < 0 or cy < 0 or cz < 0:
+                    continue
+                # Same three-cell vertical window the beams test, so the
+                # run-out is visible whatever the car's ride height reads as.
+                for dy in (-1, 0, 1):
+                    if cy + dy >= 0:
+                        new.add((int(cx) << 24) | ((int(cy) + dy) << 12)
+                                | int(cz))
+        before = len(self._solid)
+        self._solid |= new
+        added = len(self._solid) - before
+        self.virtual_cells = getattr(self, "virtual_cells", 0) + added
+        return added
+
     def is_solid(self, cx: int, cy: int, cz: int) -> bool:
         if cx < 0 or cy < 0 or cz < 0:
             return False

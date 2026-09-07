@@ -91,6 +91,25 @@ DEFAULTS: dict = {
         # reference line came from a human lap, so leaning on this hard would
         # cap the policy at copying that lap instead of beating it.
         "w_soft": 0.01,
+        # Show the LIDAR road past the finish, so the car does not lift.
+        #
+        # Almost no map has run-out built past the finish gate - the road
+        # simply stops. The beams measure "how far until the ground runs out",
+        # so on the approach they count down exactly as at a cliff edge.
+        # Measured on the ice map: 64m -> 48m -> 32m -> 16m of road ahead over
+        # the last 60m. The policy brakes, and it is right to: it has learned
+        # from the whole rest of the track that ground running out means slow
+        # down. No size of finish bonus argues with that, because braking is
+        # not being rewarded - the car is being warned by its own eyes.
+        #
+        # The episode ends on the finish plane, so nothing past the gate has
+        # to be real - only VISIBLE, and only far enough that the end never
+        # enters beam range (Lidar.max_range = MAX_CELLS * 32 = 256m). 300
+        # clears it; a shorter run-out just moves the lift later. Set 0 to
+        # switch it off. The cells are virtual - they go into the lidar's
+        # solid set but never into maps/<uid>.json.
+        "finish_runout_m": 300.0,
+        "finish_runout_half_width_m": 16.0,
         # How a checkpoint is credited.
         #
         # "gate" is the real thing: the car has to CROSS THE PLANE of the
