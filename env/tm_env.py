@@ -629,6 +629,9 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.max_cp_ever = 0   # kept as an attr name _episode_cap_steps reads
         self.bad_surface_steps = 0
         self.time_cost = self.step_cost
+        # The par-speed half of the time charge, tracked separately so the WHY
+        # log can show it as its own term. Zero until a config sets par_speed.
+        self.par_cost = 0.0
         self.map_uid: str | None = None
         self.map_name: str = ""
         self._landmarks_for: str | None = object()  # never equal to a real uid
@@ -2842,9 +2845,17 @@ class TrackmaniaEnv(gym.Env if gym else object):
         # worth nothing, above par it pays, below par it costs. That is the
         # ratio between "get further" and "stop dawdling", set directly
         # instead of falling out of two unrelated constants.
-        time_cost = self.step_cost
-        if self.par_speed > 0:
-            time_cost += self.w_progress * self.par_speed * self.dt
+        # Reported SEPARATELY from the flat step cost, because they are two
+        # different statements and only one of them is tunable per track. The
+        # flat cost says "a step costs something"; the par charge says "below
+        # this speed you are losing ground", and it is the one you actually
+        # move. Folded together into a single `time` pill there was no way to
+        # read what raising par_speed had done, which is the whole reason to
+        # raise it.
+        par_cost = (self.w_progress * self.par_speed * self.dt
+                    if self.par_speed > 0 else 0.0)
+        time_cost = self.step_cost + par_cost
+        self.par_cost = par_cost
         self.time_cost = time_cost
 
         # Pay MORE PER METRE across unbarriered sections.
@@ -2870,9 +2881,11 @@ class TrackmaniaEnv(gym.Env if gym else object):
         plat = self._platform_factor() if self.w_platform else 0.0
         parts = {
             "progress": self.w_progress * progress,
-            "step_cost": -time_cost,
+            "step_cost": -self.step_cost,
             "off_line": -self.w_soft * max(0.0, offset - self.soft_offset),
         }
+        if par_cost:
+            parts["par_speed"] = -par_cost
         if plat and progress:
             parts["platform"] = self.w_platform * progress * plat
         # Lateral distance from the line, for any marker that declares a
@@ -3303,7 +3316,15 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 and self.charge_unused_time:
             unused = max(0, self.max_steps - self.steps)
             if unused:
-                parts["unused_time"] = -self.time_cost * unused
+                # Split the same way the per-step charge is, so the par_speed
+                # pill answers "what did par cost me THIS EPISODE" in full
+                # rather than only counting the steps that were driven. The
+                # total is unchanged: step_cost*unused + par_cost*unused is
+                # exactly the time_cost*unused this used to be.
+                parts["unused_time"] = -self.step_cost * unused
+                if self.par_cost:
+                    parts["par_speed"] = (parts.get("par_speed", 0.0)
+                                          - self.par_cost * unused)
 
         reward = float(sum(parts.values()))
         for k, v in parts.items():

@@ -129,6 +129,13 @@ class WhyLog(BaseCallback):
     #: 100 or step 1500. Ranking them separately made the WHY log announce
     #: that "78% of this episode was the unused_time term, not lap time",
     #: which is precisely backwards: unused_time IS lap time.
+    #:
+    #: `par_speed` is DELIBERATELY NOT in here, even though it is also part of
+    #: the clock. It is the one piece of the time charge you actually tune, and
+    #: unlike the other two it is not a fixed cost: it is the break-even speed,
+    #: so together with `progress` it reads as `w_progress * dt * (speed -
+    #: par)`. Buried inside `time` there was no way to see what raising it had
+    #: done, which is the entire reason for raising it.
     TIME_TERMS = ("step_cost", "unused_time")
 
     def _explain(self, parts: dict, reason: str, ret: float) -> list[str]:
@@ -159,6 +166,21 @@ class WhyLog(BaseCallback):
                     f"something the policy can avoid by crashing. What it can "
                     f"change is the progress it earned against it "
                     f"({parts.get('progress', 0.0):+.1f})")
+            # par_speed and progress are two halves of one quantity, so the
+            # useful reading is the pair, not either alone: their sum IS
+            # w_progress * dt * (speed - par), i.e. how far above or below
+            # break-even the car drove. Reported whenever par is switched on,
+            # not only when it dominates - it is the term you are tuning.
+            par = merged.get("par_speed")
+            if par:
+                prog = parts.get("progress", 0.0)
+                net = prog + par
+                out.append(
+                    f"par speed: progress {prog:+.1f} against a par charge of "
+                    f"{par:+.1f} = {net:+.1f}. "
+                    + ("above par, so speed is paying" if net > 0 else
+                       "BELOW par - it is losing ground every step it drives, "
+                       "so either it is too slow or par is set too high"))
             neg = [(k, v) for k, v in ranked if v < 0 and k != "time"]
             if neg and abs(neg[0][1]) > abs(parts.get("progress", 0.0)):
                 out.append(

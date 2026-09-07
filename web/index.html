@@ -2211,9 +2211,26 @@ async function copyConfigTo() {
 
 // -- why -------------------------------------------------------------------
 
+// What each reward term actually means, on hover. Only the ones whose name
+// does not say it - a chip reading "par_speed -41.2" is a number without a
+// story, and the story is the reason the term was split out of the time
+// charge in the first place.
+const PART_HELP = {
+  progress:    'Arc length gained along the reference line. Not distance driven - cutting a corner earns the same as going round.',
+  par_speed:   'The break-even charge from reward.par_speed. Read it WITH progress: the two sum to w_progress*dt*(speed - par), so progress+par_speed above zero means it drove above par.',
+  step_cost:   'Flat charge per step.',
+  unused_time: 'The time a FAILED episode did not use, charged so that crashing early cannot dodge the clock. With step_cost it is a constant for any failure.',
+  off_line:    'Per metre per step outside the free corridor. Lateral distance from the line - nothing to do with drifting.',
+  iceslide:    'Ice-drift quality: how close to the balanced slip angle, held.',
+  speedslide:  'Speed-slide quality against SDHelper’s own bands. Needs 400km/h on road.',
+  unstick:     'Paid for getting moving again after being stopped.',
+  platform:    'Per-track scaffold: extra pay per metre across unbarriered sections.',
+};
+
 function partChip([k, v]) {
   const cls = v > 0 ? 'pos' : v < 0 ? 'neg' : '';
-  return `<span class="part ${cls}">${esc(k)} ${v > 0 ? '+' : ''}${v.toFixed(1)}</span>`;
+  const help = PART_HELP[k] ? ` title="${esc(PART_HELP[k])}"` : '';
+  return `<span class="part ${cls}"${help}>${esc(k)} ${v > 0 ? '+' : ''}${v.toFixed(1)}</span>`;
 }
 
 async function loadWhy() {
