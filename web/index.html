@@ -427,6 +427,20 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <button onclick="calibrateSeats()">Test pad links</button>
       <span class="hint" id="calibStatus" style="margin:0"></span>
     </div>
+    <div class="grp">drive it by hand</div>
+    <div class="hint">A web gamepad on the same virtual pads the policy uses.
+      Menu navigation over VNC is slow and imprecise &mdash; this is how you
+      build a splitscreen lobby, pick a map, or check a pad is wired at all.
+      Seat 0 drives every menu.</div>
+    <div class="row">
+      <button class="go" id="padguiStart" onclick="padgui('start')"
+        title="Start tools/padgui.py on :8090.">Launch interactive pad</button>
+      <button class="stop" id="padguiStop" onclick="padgui('stop')"
+        title="Stop the interactive pad.">Stop</button>
+      <a id="padguiLink" href="http://127.0.0.1:8090" target="_blank"
+         class="hint" style="margin:0; display:none">open :8090 &rarr;</a>
+      <span class="hint" id="padguiStatus" style="margin:0"></span>
+    </div>
     <div id="seatRows"></div>
     <pre id="trainLog"></pre>
   </section>
@@ -1057,6 +1071,16 @@ async function tick() {
       `<span class="ok">running</span> (pid ${fj.pid}${fj.adopted ? ', adopted' : ''})`;
   else if (!fj.running && $('fleetJobStatus').textContent.indexOf('start') < 0)
     $('fleetJobStatus').textContent = '';
+  const pg = s.padgui || {};
+  if ($('padguiStart')) {
+    $('padguiStart').disabled = !!pg.running;
+    $('padguiStop').disabled = !pg.running;
+    $('padguiLink').style.display = pg.running ? '' : 'none';
+    if (pg.url) $('padguiLink').href = pg.url;
+    $('padguiStatus').innerHTML = pg.running
+      ? `<span class="ok">running</span> on :${pg.port}`
+      : '';
+  }
   // The launch form stays editable while a trainer runs - Start is already
   // disabled, so you can only PREP the next run here, never disturb the live
   // one. The Tuning section below hot-reloads into the running trainer on Save.
@@ -1775,6 +1799,20 @@ async function fleetStart() {
   if (!r || !r.ok) {
     $('fleetJobStatus').innerHTML =
       `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
+  }
+  tick();
+}
+
+async function padgui(what) {
+  $('padguiStatus').textContent = what === 'start' ? 'starting...' : 'stopping...';
+  const r = await post('/api/padgui/' + what, {});
+  if (!r || !r.ok) {
+    $('padguiStatus').innerHTML =
+      `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
+  } else if (what === 'start' && r.url) {
+    // Opening it for you is the point - the button exists so this does not
+    // need a terminal, and it should not need a second click either.
+    window.open(r.url, '_blank');
   }
   tick();
 }

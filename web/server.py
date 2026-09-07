@@ -44,6 +44,37 @@ PAD = ("127.0.0.1", 8765)
 VENV_PY = os.path.join(ROOT, ".venv", "bin", "python")
 
 
+# Only one tools/dump_map.py at a time. They all talk to the plugin's single
+# client slot through the broker, so concurrent dumps fight each other and the
+# loser writes an empty grid - the exact failure this is meant to prevent.
+_DUMP_LOCK = threading.Lock()
+
+
+def grid_ok(uid: str) -> bool:
+    """Does this map have a USABLE occupancy grid on disk?
+
+    Not `os.path.exists`. `tools/dump_map.py` run while the game is still
+    loading the track gets 0 blocks back from the plugin and writes a
+    perfectly valid JSON file with empty `cells` and `boxes` - which then
+    looked like a good cache forever, and the run it fed had no lidar at all.
+    The car is blind in that state and nothing says so, so the check has to
+    open the file.
+    """
+    path = os.path.join(ROOT, "maps", f"{uid}.json")
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(d, dict):
+        return False
+    # A stale file from another map is worse than no file: it would be cast
+    # against geometry that is not the track being driven.
+    if d.get("map") and d["map"] != uid:
+        return False
+    return bool(d.get("cells")) and bool(d.get("boxes"))
+
+
 def venv_ready() -> bool:
     """The interpreter existing isn't enough - torch is a long install, and a
     Start button that works before it lands just produces a confusing crash."""
@@ -332,23 +363,78 @@ class Link:
         self._maybe_cache_geometry(uid)
 
     def _maybe_cache_geometry(self, uid: str):
-        """Cache the occupancy grid + road trace for a newly seen map, so it
-        exists before any trainer runs. The trainer builds these lazily on its
-        first reset, which silently produced nothing when the map was still
-        loading and left the whole run with no lidar and no track edges. This
-        runs tools/dump_map.py once per uid, in the background."""
-        if not uid or os.path.exists(os.path.join(ROOT, "maps", f"{uid}.json")):
+        """Cache the occupancy grid + road trace for a map, and KEEP TRYING.
+
+        Without a grid there is no lidar: every beam reads "nothing in range",
+        the car is blind for the whole run, and nothing fails loudly. So this
+        has to be reliable, and the previous version was not - it had three
+        separate ways to skip the dump and stay silent about it:
+
+        1. `os.path.exists(maps/<uid>.json)` treated ANY file as a good cache.
+           A dump taken while the map was still loading writes a valid JSON
+           file with `cells: []` and `boxes: []`, and that empty file then
+           suppressed every future attempt permanently. `grid_ok()` now reads
+           the file and checks it actually has cells, boxes and the right uid.
+        2. The uid was added to `_geom_started` BEFORE the dump ran, so a
+           failed dump was never retried for the life of the panel process -
+           and the usual failure is "the game had not finished loading",
+           which is exactly the transient case retrying fixes.
+        3. `except Exception: pass` with `capture_output=True` swallowed the
+           reason whole. dump_map's own diagnosis went to a pipe and was
+           dropped on the floor.
+
+        Now: retry up to `tries` times with a growing wait, verify the result
+        each time, and print what happened either way. Marked done only on a
+        verified grid, so a later map load re-attempts a map that never got one.
+        """
+        if not uid or grid_ok(uid):
             return
-        if uid in getattr(self, "_geom_started", set()):
+        started = self.__dict__.setdefault("_geom_started", set())
+        if uid in started:
             return
-        self.__dict__.setdefault("_geom_started", set()).add(uid)
+        started.add(uid)
 
         def _go():
-            try:
-                subprocess.run([VENV_PY, "tools/dump_map.py"], cwd=ROOT,
-                               capture_output=True, text=True, timeout=90)
-            except Exception:                                  # noqa: BLE001
-                pass
+            tries, delay = 4, 8
+            for attempt in range(1, tries + 1):
+                # Browsing the in-game map list walks the uid through every
+                # map you highlight, and each one lands here. Without these
+                # two guards that is a stampede of dump_map processes all
+                # competing for the plugin's single client slot, and the
+                # retries multiply it. So: one dump at a time, and never dump
+                # a map that is no longer the one loaded.
+                if self.lm_map != uid:
+                    started.discard(uid)
+                    return
+                with _DUMP_LOCK:
+                    if self.lm_map != uid:
+                        started.discard(uid)
+                        return
+                    try:
+                        r = subprocess.run(
+                            [VENV_PY, "tools/dump_map.py", "--force"],
+                            cwd=ROOT, capture_output=True, text=True,
+                            timeout=120)
+                        out = ((r.stdout or "") + (r.stderr or "")).strip()
+                    except Exception as ex:                    # noqa: BLE001
+                        out = f"{type(ex).__name__}: {ex}"
+                if grid_ok(uid):
+                    print(f"map {uid}: occupancy + roadtrace cached "
+                          f"(attempt {attempt})", flush=True)
+                    return
+                tail = " | ".join(out.splitlines()[-3:]) if out else "no output"
+                print(f"map {uid}: dump attempt {attempt}/{tries} produced no "
+                      f"usable grid - {tail}", flush=True)
+                if attempt < tries:
+                    time.sleep(delay)
+                    delay *= 2
+            # Let a later map load try again rather than staying blacklisted.
+            started.discard(uid)
+            print(f"map {uid}: STILL NO OCCUPANCY GRID after {tries} attempts. "
+                  f"Lidar will read 'nothing in range' and the car is blind - "
+                  f"run '.venv/bin/python tools/dump_map.py --force' by hand "
+                  f"and read what it says.", flush=True)
+
         threading.Thread(target=_go, daemon=True).start()
         print(f"map {uid}: caching occupancy + roadtrace in the background "
               f"(tools/dump_map.py)", flush=True)
@@ -574,6 +660,13 @@ RECORDER = Job("recorder", os.path.join(ROOT, "logs", "record_line.log"),
 # to own the supervisor - one pid, stopped with the same button.
 FLEET = Job("fleet", os.path.join(ROOT, "logs", "fleet.log"),
             match="tools/fleet.py")
+# The hand-driving pad (tools/padgui.py on :8090). Menu navigation over VNC is
+# slow and imprecise; this drives the same virtual pad the policy uses, so it
+# is also how you build a splitscreen lobby. Owned by the panel so it can be
+# started without a terminal - which was the whole point of having a panel.
+PADGUI = Job("padgui", os.path.join(ROOT, "logs", "padgui.log"),
+             match="tools/padgui.py")
+PADGUI_PORT = 8090
 
 _SYS_PY = None
 
@@ -1817,6 +1910,9 @@ class Handler(BaseHTTPRequestHandler):
                 "lines": list_lines(),
                 "line_info": lines_with_maps(),
                 "fleet": fleet_status(),
+                "padgui": {"running": PADGUI.running,
+                           "port": PADGUI_PORT,
+                           "url": f"http://127.0.0.1:{PADGUI_PORT}"},
                 # The live map's own checkpoint/finish positions. Drawn
                 # independently of the reference line, which may belong to a
                 # different map entirely - that combination is exactly what
@@ -2194,6 +2290,21 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/fleet/stop":
             self._json(FLEET.stop())
+            return
+
+        if self.path == "/api/padgui/start":
+            # System python, not the venv: padgui only opens TCP sockets to the
+            # pad server, but it lives beside the other pad tooling and the
+            # venv is not guaranteed to exist on a fresh checkout.
+            py = system_python() or sys.executable
+            r = PADGUI.start([py, "tools/padgui.py", str(PADGUI_PORT)])
+            if r.get("ok"):
+                r["url"] = f"http://127.0.0.1:{PADGUI_PORT}"
+            self._json(r)
+            return
+
+        if self.path == "/api/padgui/stop":
+            self._json(PADGUI.stop())
             return
 
         if self.path == "/api/train/start":
