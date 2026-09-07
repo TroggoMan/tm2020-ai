@@ -69,7 +69,7 @@
     "accel_gain": 3
   },
   "iceslide": {
-    "w": 2.12,
+    "w": 0.3,
     "w_any": 0.03,
     "w_blue": 0.01,
     "gamma": 3.5,

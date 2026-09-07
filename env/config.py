@@ -309,6 +309,29 @@ DEFAULTS: dict = {
     # OVERANGLE (slides out), overangle kept tighter because it is the worse
     # error. Only fires on the `ice` grip group. Same shaping knobs as
     # speedslide. `w` at 0 -> inert; raise it, watch grade/score vs lap time.
+    # TUNE `w` AGAINST THE FIRE RATE, AND EXPECT TO LOWER IT AS IT WORKS.
+    #
+    # Unlike speedslide, ice drift is meant to become the NORMAL way this car
+    # gets round an ice track - the target is >80% of the lap, not a trick
+    # pulled off twice. So the term's share of the return scales with how
+    # often it fires, and the weight has to move the other way. Measured at
+    # w=0.3 on a 1253-step lap with progress totalling ~264:
+    #
+    #     fire rate    iceslide/ep      held-streak      vs progress 264
+    #        1.4%            7               21          negligible
+    #         30%          160              451          comparable
+    #         80%          426             1203          4.5x - it IS the goal
+    #
+    # At 80% a weight tuned when it fired on 1% turns the technique into the
+    # objective: the car slides for its own sake rather than for lap time,
+    # which is the same reward hack as any other. Holding it near 15% of
+    # return at an 80% fire rate wants w ~= 0.01.
+    #
+    # So: judge `w` by iceslide's SHARE of the episode return in the WHY log,
+    # not by its absolute number, and re-check it whenever the fire rate moves.
+    # Note also FORWARD's 70 km/h speed floor - below that the term cannot fire
+    # at all, so a slow car reads as "the reward does nothing" when it is
+    # really "the car is not going fast enough for this to be ice technique".
     "iceslide": {
         "w": 0.0,               # per-step reward at the balanced angle
         "w_any": 0.0,           # floor for any in-band drift (yellow/orange)
