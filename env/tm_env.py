@@ -806,6 +806,10 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.markers.sort()
         self.step_cost = r.get("step_cost", 0.02)
         self.finish_bonus = r.get("finish_bonus", 100.0)
+        # Extra pay for the SPEED at the finish crossing, on top of the flat
+        # bonus. 0 = off; see where it is applied for why it exists.
+        self.w_finish_speed = r.get("w_finish_speed", 0.0)
+        self.finish_speed_ref = r.get("finish_speed_ref", 100.0) / 3.6
         self.cp_bonus = r.get("cp_bonus", 0.0)
         # Dense, line-free shaping: reward per metre the car closes on the next
         # uncrossed gate (straight-line to its centre; the finish once every
@@ -3246,6 +3250,27 @@ class TrackmaniaEnv(gym.Env if gym else object):
 
         if finished:
             parts["finish"] = self.finish_bonus
+            # Pay for crossing the line FAST, not merely for crossing it.
+            #
+            # The flat bonus is speed-blind, and lap time cannot make up the
+            # difference at this range: measured on the ice map, taking the
+            # last 10m at 80.6 instead of 86.5 km/h costs 0.030s, which at
+            # step_cost 0.02 is worth 0.012 of reward against a +500 bonus.
+            # The critic cannot see 0.012 in 500, so nothing anywhere in the
+            # reward asks the car to keep its foot in over the line - and it
+            # duly lifts over the last 20m and brakes in the final 10.
+            #
+            # That costs almost nothing here, which is exactly why it is off
+            # by default (w_finish_speed 0). It is worth turning on when the
+            # lift starts EARLIER than the last few metres, because the same
+            # indifference applies at 50m as at 5m and only the price changes.
+            # Scaled by speed over `finish_speed_ref` so the number stays
+            # comparable across tracks, and capped so a fast lap cannot farm
+            # it: this nudges the pedal, it does not rewrite the objective.
+            if self.w_finish_speed:
+                ref = max(1e-6, self.finish_speed_ref)
+                f = min(float(rec.get("speed") or 0.0) / ref, 1.5)
+                parts["finish_speed"] = self.w_finish_speed * f
             terminated = True
         elif self.bad_surface_steps >= self.surface_grace:
             parts["surface_term"] = -self.off_line_penalty

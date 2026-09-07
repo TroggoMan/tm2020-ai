@@ -150,6 +150,22 @@ DEFAULTS: dict = {
         "w_progress": 1.0,
         "step_cost": 0.02,
         "finish_bonus": 100.0,
+        # Extra pay for the SPEED at the finish crossing, on top of the flat
+        # bonus above. OFF by default (0), like speedslide and iceslide.
+        #
+        # The flat bonus is speed-blind and lap time cannot make up the
+        # difference this close to the line: measured on the ice map, taking
+        # the last 10m at 80.6 instead of 86.5 km/h costs 0.030 s, worth 0.012
+        # of reward against a +500 bonus. The critic cannot see 0.012 in 500,
+        # so nothing asks the car to keep its foot in over the line - and it
+        # lifts over the last 20 m and brakes in the final 10.
+        #
+        # At 10 m that is worth 0.03 s and not worth a new reward term. Turn
+        # it on if the lift starts EARLIER than the last few metres: the same
+        # indifference applies at 50 m as at 5 m, only the price changes.
+        # Paid as w_finish_speed * min(speed / finish_speed_ref, 1.5).
+        "w_finish_speed": 0.0,
+        "finish_speed_ref": 100.0,      # km/h that counts as a full-pace cross
         # Paid once for each checkpoint taken, the first time it is taken.
         #
         # Off by default so it never changes the reward under a run that is

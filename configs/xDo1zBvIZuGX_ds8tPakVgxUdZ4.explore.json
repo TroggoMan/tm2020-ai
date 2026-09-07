@@ -46,7 +46,7 @@
     "w_reversal": 0,
     "w_turbo_use": 0,
     "w_air": 0,
-    "par_speed": 27.77777777777778,
+    "par_speed": 0,
     "charge_unused_time": true,
     "w_gear": 0.02,
     "gear_hold_steps": 8,
@@ -69,16 +69,16 @@
     "accel_gain": 3
   },
   "iceslide": {
-    "w": 0.12,
+    "w": 2.12,
     "w_any": 0.03,
-    "w_blue": 0,
-    "gamma": 2,
-    "streak_gain": 0.6,
-    "streak_cap": 11,
+    "w_blue": 0.01,
+    "gamma": 3.5,
+    "streak_gain": 0.8,
+    "streak_cap": 14,
     "stall_steps": 20,
     "slip_floor_kmh": 0,
-    "accel_floor": 0.4,
-    "accel_gain": 2,
+    "accel_floor": 0.5,
+    "accel_gain": 3,
     "gear_lo": 0,
     "gear_hi": 0,
     "gear_penalty": 0.5
@@ -114,14 +114,5 @@
     "speedslide": false,
     "iceslide": true
   },
-  "markers": [
-    {
-      "s": 114.2,
-      "bonus": 50.0
-    },
-    {
-      "s": 173.3,
-      "bonus": 200.0
-    }
-  ]
+  "markers": []
 }
