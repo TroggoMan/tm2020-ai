@@ -38,11 +38,11 @@ FORWARD = {
     "road":  {"limit": 400.0, "band": (7.0, 13.0, 19.0, 22.0, 28.0, 34.0)},
     "grass": {"limit": 200.0, "band": (1.0, 1.0, 7.0, 10.0, 13.0, 22.0)},
     "dirt":  {"limit": 200.0, "band": (1.0, 3.0, 9.0, 12.0, 18.0, 24.0)},
-    # PLASTIC - NOT from SDHelper (it has no plastic case) and NOT from the
-    # Speed Drift Trainer either (its plastic calibration is 308-997 km/h).
-    # Measured off a 14.0s reference ghost on the training map, deliberately
-    # WIDE because 14.0s is not optimal - author is 12.0s. See _PLASTIC.
-    "plastic": {"limit": 200.0, "band": (10.0, 25.0, 45.0, 75.0, 100.0, 125.0)},
+    # PLASTIC - not from SDHelper (no plastic case) but anchored on the wiki:
+    # SD works from 200 km/h on dirt/grass/plastic, the angle is MUCH LOWER
+    # than road, and plastic's grip is about grass's. So it sits near the grass
+    # row above, not the road one. See _PLASTIC.
+    "plastic": {"limit": 200.0, "band": (2.0, 5.0, 8.0, 12.0, 16.0, 21.0)},
 }
 
 # Reversing. SDHelper applies no speed floor at all going backwards.
@@ -107,6 +107,29 @@ _DIRT = ("Dirt", "DirtRoad", "WetDirtRoad", "Sand", "Gravel")
 # grip group in tm_env, and its 33-46 deg green is an ice number, not a plastic
 # one. A plastic drift term would be a new thing, keyed on the brake-then-
 # rotate sequence, and env/hints.py is the mechanism for teaching that sequence.
+#
+# THE BAND WAS WIDENED TO 45-75 AND PUT BACK. Recorded so it is not done a
+# third time. A 14.0s reference ghost on the plastic training map holds a
+# median 57 km/h of side speed (13-15 deg) while cornering, which made the
+# 8-12 green look 5x too tight - it scores that driver as "not sliding
+# usefully" 77% of the time. But that is CORNERING, not SD:
+#   * the wiki puts plastic SD at 200+ km/h with an angle MUCH LOWER than
+#     road's, and plastic's grip at about grass's - and grass's green here is
+#     7-10 km/h, right next to plastic's 8-12. The band is consistent with
+#     every source once it is read as an SD band.
+#   * the ghost at 200-280 km/h is making corners, which on this track is what
+#     the four seconds are actually made of. That is a different technique with
+#     no band in this repo (see the speedslide-is-not-a-drift note above), and
+#     writing its numbers into the SD row just conflates the two again.
+# So: do not calibrate this band off cornering telemetry. If the SD band is
+# ever to be measured, measure it where the car is ACCELERATING through a
+# shallow slide above 200 km/h, not where it is rotating through a corner.
+#
+# Also corrected: the Speed Drift Trainer plugin (SilasDo) ships calibration
+# for road/grass/dirt/plastic/metal, and its plastic data spans 308-997 km/h.
+# That is where its author collected data on fullspeed maps, NOT where the
+# technique begins - the wiki is explicit that dirt SD starts around 220 and
+# runs to ~900. Do not read that lower bound as a floor.
 #
 # UNITS TRAP, do not "fix" this by typing 35 into the band: the widely quoted
 # "~35% angle" for plastic is a STEERING INPUT percentage, not a slip angle,
