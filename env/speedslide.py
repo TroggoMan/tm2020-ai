@@ -80,6 +80,31 @@ _DIRT = ("Dirt", "DirtRoad", "WetDirtRoad", "Sand", "Gravel")
 #     shallow angle at 200 km/h works out at ~10 km/h of side speed, hence
 #     green 8-12.
 #
+# CONFIRMED 2026-09-07 against community sources, and it validates the shape:
+# speedsliding on DIRT, GRASS AND PLASTIC works at 200 km/h or above, and the
+# angle has to be MUCH LOWER than on road for maximal speed gain - gentler
+# steering, or more infrequent and lighter tapping. So the 200 floor and the
+# shallow green below are right, and `speed_floor_kmh` should NOT be lowered to
+# "make the term fire" on a slow car. Tried that (120) and reverted: below 200
+# there is no speed-gain mechanic to reward, so paying for a slide there trains
+# a habit that has to be untrained later. The route to making this term fire is
+# reward.par_speed making slowness expensive until the car reaches 200+.
+#
+# A SPEEDSLIDE IS NOT A DRIFT, and this module only models the former:
+#   speedslide (SD / speeddrift) - a technique to GAIN speed. Hold a specific
+#     shallow angle at high speed and the car accelerates beyond normal; the
+#     community keys it visually off ~50% skidmark overlap. Road wants 400+
+#     (autoslide past ~598); dirt/grass/plastic from 200 at a shallower angle.
+#   drift (brake drift, "s4d" = press (s)brake (4)for (d)rift) - a technique to
+#     CORNER. Lift, steer into the corner, tap/hold brake so the rear steps out,
+#     rotate, then accelerate out; tap the brake again to tighten. Needs ~180+.
+#     BRAKING IS PART OF IT, not a failure to be penalised.
+# Nothing in this repo rewards a drift. env/iceslide.py is the closest shape
+# (banded on slip ANGLE rather than side speed) but it is gated to the `ice`
+# grip group in tm_env, and its 33-46 deg green is an ice number, not a plastic
+# one. A plastic drift term would be a new thing, keyed on the brake-then-
+# rotate sequence, and env/hints.py is the mechanism for teaching that sequence.
+#
 # UNITS TRAP, do not "fix" this by typing 35 into the band: the widely quoted
 # "~35% angle" for plastic is a STEERING INPUT percentage, not a slip angle,
 # and this table is in km/h of side speed. The three are different quantities.
