@@ -924,34 +924,69 @@ would each run at 40/N Hz. In separate processes they overlap and N games cost
 the same wall-clock as one. One instance stays `DummyVecEnv` — no fork, no
 pipe, and a traceback you can read.
 
-**The learner is inside the control loop.** This is the one thing that does
-*not* scale with instances. SB3 runs its gradient update on the same thread
-that steps the environment, so every update happens **inside** the 25 ms
-control period. Measured here, batch 256 over a 256×256 net:
+**The learner runs on its own thread, off the control loop.** It used not to,
+and that was the one thing that did not scale with instances. SB3 runs its
+gradient update on the same thread that steps the environment, so every update
+happened **inside** the 25 ms control period, and only two or three fit —
+*however many cars were driving*:
 
-| gradient steps | CUDA | CPU |
+| cars | transitions/s | updates/s (inline) | updates per transition |
+|---|---|---|---|
+| 1 | 40 | 80 | 2.00 — as intended |
+| 3 | 120 | 80 | 0.67 |
+| 12 | 480 | 80 | 0.17 |
+
+Updates-per-transition is what off-policy sample efficiency actually tracks, so
+a twelve-car fleet collected twelve times the data and learned from each piece
+of it twelve times *less*.
+
+`train/learner.py` moves training to a background thread. The rollout thread
+does no Python work worth blocking — it sits in `time.sleep` (DummyVecEnv) or a
+blocking pipe read (SubprocVecEnv), both of which release the GIL, and torch
+releases the GIL around its ops. Measured on the 4080 with a real SAC:
+
+| arrangement | updates/s | control period med/p95/max |
 |---|---|---|
-| 1 | 2.9 ms | 11.9 ms |
-| 2 | 5.9 ms | 25.7 ms |
-| 4 | 12.1 ms | 46.1 ms |
-| 6 | 18.3 ms | 59.0 ms |
-| 8 | 27.2 ms | 89.9 ms |
+| inline, 2 steps per tick | 80 | 25.0 / 25.0 / 25.0 ms |
+| **decoupled thread** | **217** | 25.0 / 25.0 / 25.1 ms |
+| decoupled thread, nothing else running | 224 | — |
 
-Overrun the period and the car keeps driving while nothing is being sent to it
-— and worse, every transition still *claims* to be a 25 ms one, so the model
-learns the dynamics of a game running at a rate it never ran at. Three
-instances at 6 updates a round measured **30 Hz, not 40**, with ~300 overruns
-per episode.
+The thread gets 97% of the rate it manages with no control loop at all, and
+costs the period 0.1 ms at p95 with zero overruns — the same at 1, 4 and 12
+envs, with the GPU at 96% busy. A separate learner *process* buys nothing on
+top of that (and costs an IPC replay buffer, published weights and policy
+staleness), so it was not built.
 
-So `--gradient-steps 0` (the default) caps the count at what fits in half the
-period, and the episode log prints `slip=N` when it overran anyway. The
-consequence is real and accepted: adding instances raises transitions per
-second without raising updates per second, which *lowers* the
-updates-per-transition ratio. That is the right side of the trade — more
-diverse data with fewer updates each beats hammering a small buffer.
-`env/tm_env.py` also paces against an **absolute** clock rather than sleeping
-`dt` from the top of `step()`, so the learner's time is absorbed into the
-control period instead of added on top of it.
+**It is paced, not free-running.** `--utd` (default 2.0) targets gradient
+updates per transition — the ratio this trainer always intended, since
+`auto_gradient_steps` asks for `2 * instances`. Left free-running, one car
+would reach ~5 updates per transition, which is where SAC needs REDQ/DroQ-style
+tricks not to destabilise. So decoupling *restores* the designed behaviour at
+every fleet size rather than introducing new behaviour at one of them; a single
+instance is unchanged, at 2.00 before and after.
+
+**The GPU is the new ceiling, at ~217 updates/s.** That is a hard wall: past
+about two cars, UTD 2.0 is unaffordable no matter how the loop is arranged.
+
+| cars | transitions/s | UTD inline | UTD decoupled | gain |
+|---|---|---|---|---|
+| 1 | 40 | 2.00 | 2.00 | — |
+| 4 | 160 | 0.50 | 1.31 | 2.6× |
+| 8 | 320 | 0.25 | 0.68 | 2.7× |
+| 12 | 480 | 0.17 | 0.41 | 2.5× |
+
+(Decoupled figures measured, not modelled.) So **more cars buy data diversity
+and wall-clock coverage, not more learning**: total gradient work is fixed at
+what one GPU can issue, and each transition gets a smaller share of it.
+`--batch-size` auto-widens past that point — a wider batch is nearly free below
+~4096 because the step is kernel-launch bound — so each of the updates you can
+afford at least sees more of the buffer. More data per update is not the same
+thing as more updates, and the startup banner says which regime the run is in.
+
+`--no-decouple` restores the old inline behaviour for comparison.
+`env/tm_env.py` still paces against an **absolute** clock rather than sleeping
+`dt` from the top of `step()`, so any work sharing the loop is absorbed into
+the control period instead of added on top of it.
 
 **Accounts are the part that is not automated.** One Ubisoft account can only be
 signed in once at a time, so N concurrent games need N accounts, created and

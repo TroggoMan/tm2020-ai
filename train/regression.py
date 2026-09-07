@@ -126,7 +126,14 @@ class RegressionGuard(BaseCallback):
             # set_parameters swaps the weights in place and leaves the replay
             # buffer untouched. Reloading the whole model would throw away the
             # experience, which is the expensive part and is still valid.
-            self.model.set_parameters(path, exact_match=False)
+            #
+            # paused() holds the decoupled learner still for the swap: restoring
+            # weights underneath a running optimiser step would leave the
+            # optimiser's momentum pointed at the policy it just replaced, and
+            # the rollback would half take. No-op when training is inline.
+            from train.learner import paused
+            with paused(self.model):
+                self.model.set_parameters(path, exact_match=False)
             self.rollbacks += 1
             self.returns.clear()
             self.bad = 0

@@ -30,6 +30,8 @@ from env.tm_env import TrackmaniaEnv, instance_ports
 from env.ports import host_for, seat_ports
 from train.bootstrap import BootstrapSAC, HintRelay
 from train.handover import HandoverWatch, RACE_PROFILE, build_race_line
+from train.learner import (DecoupledLearner, auto_batch, capacity_report,
+                           paused)
 from train.regression import RegressionGuard
 from train.rotate import MapRotator, resolve_maps
 from train.nn_probe import NNProbe
@@ -99,6 +101,11 @@ def write_meta(path: str, env, args, grad: int) -> None:
             "control_hz": args.control_hz, "stage": args.stage,
             "instances": args.instances, "seats": args.seats,
             "gradient_steps": grad,
+            # Decoupled runs record the RATIO, not the step count: the step
+            # count is 0 because the learner thread owns training, and the
+            # ratio is the thing that actually differs between runs.
+            "utd": (args.utd if getattr(args, "decouple", True) else None),
+            "batch_size": getattr(args, "_batch", None),
             "action": dict(cfg.data.get("action", {})),
             "cp_mode": cfg.get("line", "cp_mode", "gate"),
             "par_speed": cfg.get("reward", "par_speed", 0.0),
@@ -170,6 +177,20 @@ def check_meta(path: str, args) -> None:
     if old.get("cp_mode") and old["cp_mode"] != now.get("line", "cp_mode", "gate"):
         notes.append(f"checkpoints were credited by '{old['cp_mode']}' and are "
                      f"now by '{now.get('line', 'cp_mode', 'gate')}'")
+    # Not a compatibility problem - the weights, the buffer and the shapes are
+    # all identical either way - but it changes how hard the run trains, so a
+    # step change in behaviour has a stated reason rather than looking like
+    # the policy suddenly improved or destabilised on its own.
+    was_utd, is_utd = old.get("utd"), (args.utd if args.decouple else None)
+    if was_utd != is_utd:
+        def _d(v):
+            if v:
+                return f"{v:g} updates/transition (decoupled learner)"
+            return ("the inline loop (2-3 updates per control period, shared "
+                    "across every car)")
+        notes.append(f"trained under {_d(was_utd)} and is now on {_d(is_utd)}"
+                     f" - same weights, same buffer, more (or less) learning "
+                     f"per transition from here on")
     if old.get("control_hz") and abs(old["control_hz"] - args.control_hz) > 0.1:
         notes.append(f"control rate was {old['control_hz']}Hz, now "
                      f"{args.control_hz}Hz - every transition in the buffer "
@@ -239,6 +260,58 @@ def auto_gradient_steps(instances: int, control_hz: float) -> int:
               f"{1000/control_hz:.0f}ms control period - using {fits}. "
               f"Overruns show as 'slip=' in the episode log.", flush=True)
     return min(want, fits)
+
+
+BASE_BATCH = 256          # what this trainer used before batch scaling
+
+
+def auto_batch_size(instances: int, steps: int) -> int:
+    """Recover the sample throughput the clock refuses to give us as steps.
+
+    auto_gradient_steps() caps updates at what fits in the control period, so
+    `2 * instances` updates collapse to two or three however many cars are
+    driving. That lowers updates-per-transition, and the fix is NOT more steps
+    - the clock genuinely has no room.
+
+    It is batch size, because on this hardware batch size is almost free.
+    Measured on the 4080, one gradient step over a 256x256 net:
+
+        batch   256   3.99ms      64 samples/ms
+        batch  1024   3.84ms     267 samples/ms    <- 4x the data, FASTER
+        batch  2048   4.05ms     506 samples/ms
+        batch  4096   4.60ms     891 samples/ms    <- 16x data, +15% time
+        batch  8192   6.47ms    1266 samples/ms    <- starts to cost
+        batch 16384  10.27ms    1595 samples/ms    <- compute-bound
+
+    Up to ~4096 the GPU idles between kernel launches, so a wider batch rides
+    along for free. Past it the maths dominates, hence the cap.
+
+    Crucially this does NOT trade away update FREQUENCY: the step count stays
+    exactly what auto_gradient_steps allowed, so the soft target update (tau)
+    and the entropy-coefficient update keep their old cadence. All it does is
+    stop each step being starved of data. Against the alternative of many
+    small steps it WOULD be a real trade - sequential updates each see a critic
+    the previous one moved - but the control period never permitted those.
+
+    One instance comes out at exactly BASE_BATCH, so single-game runs are
+    bit-for-bit what they were.
+
+    NOT DONE, deliberately: torch.compile. It does work and it is worth about
+    20% (3.99ms -> 3.17ms at batch 256, 1.2s to warm up), but a compiled module
+    prefixes every state_dict key with "_orig_mod.", so a checkpoint saved with
+    it on CANNOT be loaded by an uncompiled SAC:
+
+        RELOAD FAILED: Missing key(s) in state_dict:
+          "actor.latent_pi.0.weight", ...
+
+    Measured, not assumed. 0.8ms is not worth orphaning every checkpoint in a
+    project whose rule is that the model never resets. If someone wants it,
+    it needs a state_dict hook that strips the prefix on save AND a migration
+    for anything already written - do that first, then enable it.
+    """
+    want_samples = 2 * max(1, instances) * BASE_BATCH
+    batch = int(want_samples / max(1, steps))
+    return max(BASE_BATCH, min(4096, batch))
 
 
 def calibrate_seats_or_die(args) -> None:
@@ -367,7 +440,8 @@ class EpisodeLog(BaseCallback):
         if not self.promote_to:
             return
         try:
-            self.model.save(self.promote_to)
+            with paused(self.model):
+                self.model.save(self.promote_to)
         except Exception as ex:
             print(f"  promote to {self.promote_to} failed: {ex}", flush=True)
 
@@ -381,7 +455,8 @@ class EpisodeLog(BaseCallback):
         """
         try:
             os.makedirs(self.archive_dir, exist_ok=True)
-            self.model.save(os.path.join(self.archive_dir, tag))
+            with paused(self.model):
+                self.model.save(os.path.join(self.archive_dir, tag))
             print(f"  archived {self.name}/{tag}.zip", flush=True)
         except Exception as ex:
             print(f"  archive failed: {ex}", flush=True)
@@ -400,7 +475,8 @@ class EpisodeLog(BaseCallback):
             if info.get("finished") and rt:
                 if self.best is None or rt < self.best:
                     self.best = rt
-                    self.model.save(self.path + "_best")
+                    with paused(self.model):
+                        self.model.save(self.path + "_best")
                     self._promote()
                     print(f"  new best {rt/1000:.3f}s -> {self.path}_best.zip",
                           flush=True)
@@ -437,10 +513,17 @@ class EpisodeLog(BaseCallback):
         now = time.time()
         if now - self.last_save > self.save_every_s:
             self.last_save = now
-            self.model.save(self.path)
-            self.model.save_replay_buffer(self.path + "_buffer")
+            with paused(self.model):
+                self.model.save(self.path)
+                self.model.save_replay_buffer(self.path + "_buffer")
             self._promote()
-            print(f"  checkpoint saved ({self.num_timesteps} steps)", flush=True)
+            # How hard the learner is actually working, every checkpoint. A
+            # dead learner thread otherwise looks exactly like a healthy run:
+            # the cars drive, the episodes log, the checkpoints land.
+            lr = getattr(self.model, "learner", None)
+            note = f" | {lr.summary()}" if lr is not None else ""
+            print(f"  checkpoint saved ({self.num_timesteps} steps){note}",
+                  flush=True)
         if now - self.last_archive > self.archive_every_s:
             self.last_archive = now
             self._archive(f"ep{self.ep:05d}_step{self.num_timesteps//1000:05d}k")
@@ -564,9 +647,28 @@ def main():
                          "on 8765+i and its own broker on 8767+i - "
                          "tools/fleet.py brings those up")
     ap.add_argument("--gradient-steps", type=int, default=0,
-                    help="gradient steps per collection round; 0 picks the "
-                         "most that fit inside the control period (see "
-                         "auto_gradient_steps)")
+                    help="INLINE mode only (--no-decouple): gradient steps per "
+                         "collection round; 0 picks the most that fit inside "
+                         "the control period (see auto_gradient_steps)")
+    ap.add_argument("--no-decouple", dest="decouple", action="store_false",
+                    help="run the learner inside the control loop, the old "
+                         "way. Only for comparing against a decoupled run - "
+                         "it caps updates at two or three per control period "
+                         "however many cars are driving.")
+    ap.add_argument("--utd", type=float, default=2.0, metavar="RATIO",
+                    help="target gradient updates per transition collected. "
+                         "2.0 is what this trainer always intended (it asks "
+                         "for 2*instances steps per round) and what one "
+                         "instance actually got; decoupling is what lets a "
+                         "fleet have it too. Do not free-run this: a single "
+                         "car would reach ~10, which needs REDQ/DroQ-style "
+                         "tricks not to destabilise SAC.")
+    ap.add_argument("--batch-size", type=int, default=0, metavar="N",
+                    help="samples per gradient update. 0 auto-sizes: 256 when "
+                         "the target ratio fits, wider when the GPU cannot "
+                         "sustain enough updates/s and each one should "
+                         "therefore see more data. Free up to ~4096 - the step "
+                         "is kernel-launch bound, not compute bound.")
     ap.add_argument("--bootstrap", choices=("pursuit", "straight", "off"),
                     default="pursuit",
                     help="what to do during the warm-up, before the policy is "
@@ -750,10 +852,28 @@ def main():
                       f"plugin {p_['plugin']}, broker {p_['broker']}", flush=True)
     env = make_vec_env(n, factory)
 
-    grad = args.gradient_steps or auto_gradient_steps(n, args.control_hz)
+    if args.decouple:
+        # The learner owns training now, so SB3's in-loop train() must not
+        # also run: gradient_steps=0 is what switches it off (learn() skips
+        # the call entirely rather than doing zero work in it).
+        grad = 0
+        batch = args.batch_size or auto_batch(n, args.control_hz, args.utd)
+        print(capacity_report(n, args.control_hz, args.utd, batch), flush=True)
+    else:
+        grad = args.gradient_steps or auto_gradient_steps(n, args.control_hz)
+        batch = args.batch_size or auto_batch_size(n, grad)
+        if batch != BASE_BATCH:
+            print(f"  batch {batch} (was {BASE_BATCH}): the clock allows only "
+                  f"{grad} update(s), so each gets {batch // BASE_BATCH}x the "
+                  f"data instead. Step count, tau cadence and entropy updates "
+                  f"are unchanged.", flush=True)
+        print(f"  INLINE learner: {grad} gradient step(s) per round over "
+              f"{n} car(s) = {grad / n:.2f} updates per transition. "
+              f"--utd {args.utd:g} decoupled would give "
+              f"{args.utd:g}.", flush=True)
+    args._batch = batch
     print(f"obs dim {env.observation_space.shape[0]}, "
-          f"control {args.control_hz:.0f}Hz, {grad} gradient steps/round",
-          flush=True)
+          f"control {args.control_hz:.0f}Hz", flush=True)
 
     if args.resume and os.path.exists(path + ".zip"):
         print("resuming from", path + ".zip", flush=True)
@@ -764,7 +884,15 @@ def main():
         model.bootstrap = "off"
         # The instance count can change between runs; the update ratio has to
         # follow it rather than staying at whatever the saved model used.
+        # Decoupled, this is 0: the learner thread owns training, and leaving
+        # the saved model's value here would train BOTH inline and on the
+        # thread.
         model.gradient_steps = grad
+        # The saved model carries its old batch_size, and nothing was
+        # overwriting it - so a resume silently ignored the batch this run
+        # computed. Harmless while decoupled (the learner passes batch_size
+        # per call) and a real bug inline.
+        model.batch_size = batch
         # The buffer is the expensive part - every transition in it cost real
         # wall-clock. Resuming without it throws that away and relearns blind.
         buf = path + "_buffer.pkl"
@@ -797,7 +925,7 @@ def main():
             # Every transition costs real wall-clock, so start learning early
             # and take several gradient steps per environment step.
             learning_starts=args.learning_starts,
-            batch_size=256,
+            batch_size=batch,
             train_freq=1,
             gradient_steps=grad,
             tau=0.005,
@@ -894,6 +1022,14 @@ def main():
     # Ctrl-C (what the web panel's Stop sends) should save, not discard.
     def save_and_exit(signum, frame):
         print("\nstopping - saving model and replay buffer", flush=True)
+        # Stop the learner FIRST. A save that races a gradient step writes a
+        # checkpoint holding some tensors from before the update and some from
+        # after, and pickling the buffer while add() is mid-transition can
+        # catch one half-written.
+        lr = getattr(model, "learner", None)
+        if lr is not None:
+            lr.stop(timeout=2.0)
+            print("  " + lr.summary(), flush=True)
         model.save(path)
         write_meta(path, env, args, grad)
         try:
@@ -995,15 +1131,29 @@ def main():
               f"line" + (" and start the race stage" if args.then_race else ""),
               flush=True)
 
+    # The learner goes on its own thread, off the control loop. Started here
+    # rather than in the constructor so that a --resume has already restored
+    # the buffer: it begins training the moment learning_starts is passed, and
+    # a resumed run passes that on its first step.
+    learner = None
+    if args.decouple:
+        learner = DecoupledLearner(model, batch_size=batch,
+                                   utd=args.utd).start()
+
     try:
         model.learn(total_timesteps=args.steps,
                     callback=callbacks,
                     reset_num_timesteps=not args.resume)
     finally:
-        model.save(path)
+        if learner is not None:
+            learner.stop()
+            print(learner.summary(), flush=True)
+        with paused(model):
+            model.save(path)
         write_meta(path, env, args, grad)
         try:
-            model.save_replay_buffer(path + "_buffer")
+            with paused(model):
+                model.save_replay_buffer(path + "_buffer")
         except Exception as ex:
             print("could not save replay buffer:", ex, flush=True)
         # Grab the map uid before the envs go away - the handover needs it to
