@@ -1249,6 +1249,21 @@ def do_handover(args, watch) -> int:
             "--instances", str(race_instances),
             "--init-from", explore_model,
             "--promote-to", driver]
+    # Carry the learner arrangement across. Without this the racer silently
+    # re-decides it: an explore run deliberately started with --no-decouple
+    # would come back decoupled, and a tuned --utd would drop back to the
+    # default. Same class of mistake as not carrying --control-hz - the buffer
+    # and the weights survive, but they were produced under different rules.
+    # --buffer-size too: the racer inherits the fleet size, and the buffer has
+    # to be sized in HOURS of driving rather than transitions (twelve cars
+    # burn through 2M in about an hour).
+    if args.decouple:
+        argv += ["--utd", str(args.utd)]
+        if args.batch_size:
+            argv += ["--batch-size", str(args.batch_size)]
+    else:
+        argv += ["--no-decouple"]
+    argv += ["--buffer-size", str(args.buffer_size)]
     # Carry sector curriculum through: if the explore run drilled start->CP1,
     # CP1->CP2, ... then the racer should too, now that the route is known.
     # The --curriculum-* tuning carries with it so the handover does not
