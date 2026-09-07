@@ -26,7 +26,7 @@
   "line": {
     "max_offset": 250,
     "soft_offset": 8,
-    "w_soft": 0,
+    "w_soft": 0.0,
     "cp_mode": "gate",
     "cp_half_width": 18,
     "cp_height": 10,
@@ -52,7 +52,7 @@
     "gear_hold_steps": 8,
     "top_gear": 5,
     "w_downshift": 0,
-    "w_gas": 0.01,
+    "w_gas": 0.0,
     "w_accel": 0.05,
     "w_both_pedals": 0
   },
@@ -69,9 +69,9 @@
     "accel_gain": 3
   },
   "iceslide": {
-    "w": 0,
-    "w_any": 0,
-    "w_blue": 0,
+    "w": 0.12,
+    "w_any": 0.03,
+    "w_blue": 0.0,
     "gamma": 2,
     "streak_gain": 0.6,
     "streak_cap": 4,
@@ -95,7 +95,8 @@
     "binary_brake": true,
     "gas_threshold": 0,
     "brake_threshold": 0,
-    "steer_rate": 0
+    "steer_rate": 8.0,
+    "steer_levels": 10
   },
   "surfaces": {
     "Snow": -0.5,
@@ -111,7 +112,7 @@
     "gear": true,
     "accel": true,
     "speedslide": false,
-    "iceslide": false
+    "iceslide": true
   },
   "markers": [
     {
