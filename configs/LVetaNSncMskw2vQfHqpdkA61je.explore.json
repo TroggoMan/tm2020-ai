@@ -59,7 +59,7 @@
   "speedslide": {
     "w": 0.8,
     "w_blue": 0,
-    "speed_floor_kmh": 0.0,
+    "speed_floor_kmh": 0,
     "w_any": 0.08,
     "gamma": 2.5,
     "streak_gain": 0.6,
@@ -94,8 +94,8 @@
     "binary_gas": true,
     "binary_brake": true,
     "gas_threshold": 0,
-    "brake_threshold": 0.6,
-    "steer_rate": 8.0,
+    "brake_threshold": 0.95,
+    "steer_rate": 8,
     "steer_levels": 10
   },
   "surfaces": {},

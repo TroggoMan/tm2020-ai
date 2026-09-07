@@ -38,8 +38,11 @@ FORWARD = {
     "road":  {"limit": 400.0, "band": (7.0, 13.0, 19.0, 22.0, 28.0, 34.0)},
     "grass": {"limit": 200.0, "band": (1.0, 1.0, 7.0, 10.0, 13.0, 22.0)},
     "dirt":  {"limit": 200.0, "band": (1.0, 3.0, 9.0, 12.0, 18.0, 24.0)},
-    # PLASTIC - NOT from SDHelper. See _PLASTIC below for why it cannot be.
-    "plastic": {"limit": 200.0, "band": (2.0, 5.0, 8.0, 12.0, 16.0, 21.0)},
+    # PLASTIC - NOT from SDHelper (it has no plastic case) and NOT from the
+    # Speed Drift Trainer either (its plastic calibration is 308-997 km/h).
+    # Measured off a 14.0s reference ghost on the training map, deliberately
+    # WIDE because 14.0s is not optimal - author is 12.0s. See _PLASTIC.
+    "plastic": {"limit": 200.0, "band": (10.0, 25.0, 45.0, 75.0, 100.0, 125.0)},
 }
 
 # Reversing. SDHelper applies no speed floor at all going backwards.

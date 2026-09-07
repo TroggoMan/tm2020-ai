@@ -2026,15 +2026,24 @@ function field(path, value) {
   // [-1, 1], so anything >= 1 disconnects that pedal entirely and nothing
   // downstream can tell you - a car that never brakes looks exactly like a car
   // that chose not to. brake_threshold sat at 1.2 for hours once. Bound them.
+  // ...but DISABLING a pedal on purpose is a legitimate thing to want: the
+  // reference ghost on plastic never brakes at all, so hard-off is a real
+  // training decision, not only an accident. So the ceiling allows it and the
+  // field shouts instead of silently clamping. 1.5 still catches a typo'd 12.
   const pedal = path === 'action.gas_threshold'
              || path === 'action.brake_threshold';
-  const bounds = pedal ? ' min="-1" max="0.95"' : '';
+  const bounds = pedal ? ' min="-1" max="1.5"' : '';
+  const offWarn = (pedal && value >= 1)
+    ? `<div class="h"><span class="warn">PEDAL DISABLED</span> - the action is `
+      + `clipped to [-1, 1], so nothing can exceed ${value}. This pedal is `
+      + `hard OFF${path.includes('brake') ? ' (and with it, reverse)' : ''}.</div>`
+    : '';
   const input = step === null
     ? `<input type="text" value="${esc(shown)}" onchange="onField('${path}', this.value)">`
     : `<input type="number" step="${step}"${bounds} value="${shown}"
               onchange="onField('${path}', +this.value)">`;
   return `<div class="fld"><span class="k">${esc(label)}</span>${input}` +
-         (help ? `<div class="h">${esc(help)}</div>` : '') + `</div>`;
+         (help ? `<div class="h">${esc(help)}</div>` : '') + offWarn + `</div>`;
 }
 
 function onField(path, value) {
@@ -2042,11 +2051,20 @@ function onField(path, value) {
   const scale = (FIELD[path] || [])[3];
   if ((path === 'action.gas_threshold' || path === 'action.brake_threshold')
       && value >= 1) {
-    alert(`${path.split('.').at(-1)} of ${value} can never be met - the network `
-        + `output is clipped to [-1, 1], so this switches that pedal OFF `
-        + `entirely. Clamped to 0.95; 0 is the usual value.`);
-    value = 0.95;
-    renderFields();
+    // Confirm rather than clamp. Disabling a pedal is a real training choice
+    // (the plastic reference ghost never brakes), but it must never happen by
+    // accident - a dead pedal looks exactly like a policy that chose not to
+    // use it, and that cost hours once.
+    const which = path.split('.').at(-1).replace('_threshold', '');
+    const extra = which === 'brake'
+      ? ', and with it REVERSE, so the car cannot back out of a wall' : '';
+    const msg = which + ' threshold ' + value + ' can never be met - the '
+      + 'network output is clipped to [-1, 1].\n\nThis switches the '
+      + which + ' OFF entirely' + extra + '.\n\nIntentional?';
+    if (!confirm(msg)) {
+      renderFields();
+      return;
+    }
   }
   setPath(CONFIG, path, scale ? value / scale : value);
   markDirty();
