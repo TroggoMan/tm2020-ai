@@ -530,6 +530,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.steps = 0
         self.slow_for = 0
         self.moved = False
+        self.never_moved = False
         # Furthest progress when the stall timer was last reset.
         self._stall_ref_s = 0.0
         self._stalled_for = 0
@@ -775,6 +776,21 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.use_lap_progress = bool(c.get("line", "use_lap_progress", True))
         _nps = float(c.get("stuck", "no_progress_s", 6.0))
         self.no_progress_steps = int(_nps * self.control_hz) if _nps > 0 else 0
+        # A car that has NEVER moved is not "still in the intro" forever.
+        #
+        # Both stuck guards below are gated on self.moved, which only becomes
+        # true once the car exceeds stuck_speed. That gate is right - it stops
+        # the fly-in being scored as stuck - but it means a car that never
+        # moves AT ALL is never caught by either, and runs to the full episode
+        # cap. Measured overnight on the plastic map: a seat spawning 139 m off
+        # the reference line produced 60 of 100 episodes as 133-second
+        # timeouts, gas +0.0 and progress +0.0, each one two minutes of wall
+        # clock contributing nothing but the constant par_speed charge. Finish
+        # rate read 27% when the cars that actually raced were finishing fine.
+        # Generous by default: the intro is ~8 s and a slow spawn must not trip
+        # it. 0 disables.
+        _nms = float(c.get("stuck", "never_moved_s", 15.0))
+        self.never_moved_steps = int(_nms * self.control_hz) if _nms > 0 else 0
         self.stuck_steps = int(c.get("stuck", "seconds", 5.0) * self.control_hz)
         self.max_offset = c.get("line", "max_offset", 30.0)
         self.soft_offset = c.get("line", "soft_offset", 8.0)
@@ -2413,6 +2429,7 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.steps = 0
         self.slow_for = 0
         self.moved = False
+        self.never_moved = False
         # Furthest progress when the stall timer was last reset.
         self._stall_ref_s = 0.0
         self._stalled_for = 0
@@ -3303,7 +3320,13 @@ class TrackmaniaEnv(gym.Env if gym else object):
                 self.moved = True
             self.slow_for = (self.slow_for + 1
                              if ground_speed < self.stuck_speed else 0)
-            if self.moved and self.slow_for >= self.stuck_steps:
+            if (not self.moved and self.never_moved_steps
+                    and self.steps >= self.never_moved_steps):
+                # Never moved at all - a dead seat, not a slow start.
+                parts["stuck"] = -self.stuck_penalty
+                terminated = True
+                self.never_moved = True
+            elif self.moved and self.slow_for >= self.stuck_steps:
                 parts["stuck"] = -self.stuck_penalty
                 terminated = True
             # WEDGED BUT MOVING. The check above only sees standing still, so a
@@ -3399,7 +3422,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
             info["finished"] = True
         elif terminated:
             info["reason"] = ("surface" if "surface_term" in parts else
-                              "off_line" if "off_line_term" in parts else "stuck")
+                              "off_line" if "off_line_term" in parts else
+                              "never_moved" if self.never_moved else "stuck")
         elif truncated:
             info["reason"] = "timeout"
 

@@ -78,6 +78,20 @@ DEFAULTS: dict = {
     "stuck": {
         "speed": 1.0,
         "seconds": 5.0,
+        # Seconds a car may sit having NEVER moved before the episode ends.
+        #
+        # Both stuck guards are gated on "has moved at least once", so that the
+        # fly-in is not scored as stuck. The side effect is that a car which
+        # never moves AT ALL falls through both of them and runs to the full
+        # episode cap. Measured overnight on the plastic map: one seat spawning
+        # 139 m off the reference line turned 60 of 100 episodes into
+        # 133-second nothings - gas +0.0, progress +0.0 - each two minutes of
+        # wall clock contributing only the constant par_speed charge, while the
+        # cars that actually raced were finishing fine.
+        #
+        # Generous by default: the intro is ~8 s and a slow spawn must not trip
+        # it. 0 disables.
+        "never_moved_s": 15.0,
     },
     "line": {
         # All three are LATERAL DISTANCE FROM THE REFERENCE LINE, in metres.

@@ -48,12 +48,12 @@
     "w_air": 0,
     "par_speed": 44.444,
     "charge_unused_time": true,
-    "w_gear": 0.04,
+    "w_gear": 0.03,
     "gear_hold_steps": 24,
     "top_gear": 5,
-    "w_downshift": 0.12,
+    "w_downshift": 0.2,
     "w_gas": 0.01,
-    "w_accel": 0.05,
+    "w_accel": 0.1,
     "w_both_pedals": 0
   },
   "speedslide": {
@@ -94,7 +94,7 @@
     "binary_gas": true,
     "binary_brake": true,
     "gas_threshold": 0,
-    "brake_threshold": 0.95,
+    "brake_threshold": 1.05,
     "steer_rate": 8,
     "steer_levels": 10
   },

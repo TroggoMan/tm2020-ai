@@ -1609,6 +1609,7 @@ const FIELD = {
   'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor.'],
   'reward.w_finish_speed': ['finish speed bonus', 5, 'Extra pay for the SPEED at the finish crossing. The flat finish bonus is speed-blind, so nothing asks the car to keep its foot in over the line. 0 = off; worth turning on only if it lifts well before the gate.'],
   'reward.finish_speed_ref': ['finish speed ref (km/h)', 10, 'Speed that counts as a full-pace crossing. The bonus is w * min(speed/ref, 1.5).'],
+  'stuck.never_moved_s':   ['never-moved cutoff (s)', 1, 'Seconds a car may sit having NEVER moved before the episode ends. The other stuck checks only apply once it has moved at least once, so without this a dead seat runs the full episode cap doing nothing. 0 disables.'],
   'line.finish_runout_m':  ['finish run-out (m)', 25, 'Virtual road shown to the LIDAR past the finish, so the beams do not count down to an edge and make the car lift. 0 = off; use 300+ (beam range is 256m). Nothing is written to the map dump.'],
   'line.finish_runout_half_width_m': ['run-out width (m)', 4, 'Half-width of that virtual corridor.'],
   'line.cp_mode':          ['checkpoint test', null, 'gate = must cross the checkpoint plane; sphere = be within N metres.'],
