@@ -1810,6 +1810,19 @@ async function loadConfig(keepMap) {
   renderSurfaces();
 }
 
+// Fallbacks for parameters the env has an inline default for but a config file
+// may simply not contain. renderFields used to iterate only the keys present in
+// the file, so a parameter was invisible in the panel until something happened
+// to write it - the jump run-up terms never appeared on a map with a jump in
+// it, because no config template seeds them. These values mirror the env's own
+// defaults (see env/tm_env.py), so showing them is honest about what is in
+// force rather than implying the field is unset.
+const FIELD_DEFAULT = {
+  'reward.w_jump_speed':    0.0,
+  'reward.jump_approach_m': 40.0,
+  'reward.jump_target_kmh': 200.0,
+};
+
 function renderFields() {
   const parts = [];
   const sections = [['episode', 'episode'], ['reward', 'reward'],
@@ -1819,8 +1832,18 @@ function renderFields() {
                     ['stuck', 'stuck detector'], ['reset', 'reset']];
   for (const [key, label] of sections) {
     parts.push(`<div class="grp">${label}</div>`);
-    for (const k of Object.keys(CONFIG[key] || {}))
+    const present = Object.keys(CONFIG[key] || {});
+    for (const k of present)
       parts.push(field(`${key}.${k}`, CONFIG[key][k]));
+    // Then anything the schema knows about that this file omits, at the env's
+    // default. Without this a tuning knob is unreachable from the panel until
+    // someone hand-edits JSON, which is how the jump terms went missing on a
+    // map that has a jump.
+    for (const path of Object.keys(FIELD_DEFAULT)) {
+      const [sec, k] = path.split('.');
+      if (sec === key && !present.includes(k))
+        parts.push(field(path, FIELD_DEFAULT[path]));
+    }
   }
   parts.push(`<div class="grp">surfaces</div>`);
   parts.push(field('surface_grace_steps', CONFIG.surface_grace_steps));
