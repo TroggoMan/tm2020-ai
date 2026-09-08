@@ -42,6 +42,12 @@
   button:disabled{opacity:.4;cursor:not-allowed}
   button.go{background:#12352c;border-color:#1e6a55;color:var(--accent)}
   button.stop{background:#331917;border-color:#7a2f2a;color:var(--bad)}
+  /* A <label for=file-input> that has to look like the buttons beside it,
+     because a bare file input cannot be styled to match. */
+  .btnlike{font:12px/1 inherit;padding:8px 13px;border-radius:6px;
+           cursor:pointer;background:#20272f;color:var(--ink);
+           border:1px solid var(--line);display:inline-block}
+  .btnlike:hover{border-color:var(--accent);color:var(--accent)}
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
   .row:last-child{margin-bottom:0}
   input,select{font:12px var(--mono);padding:7px 9px;border-radius:6px;
@@ -518,12 +524,15 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
 
   <section>
     <h2>Ghosts</h2>
-    <div class="hint">A .Ghost.Gbx cannot be read here &mdash; the body is
-      LZO-compressed and parsing it is unbuilt. What this does is put it where
-      the game reads ghosts from, so you can play it and record it with the
-      recorder above. Install &rarr; play it in game &rarr; Record.</div>
-    <div class="row">
+    <div class="hint">Ghosts are read straight out of the .Gbx &mdash; no game,
+      no replay, no recorder. <b>Import</b> writes a reference line and a demo
+      file from the world record's own samples. <b>Install</b> is only needed if
+      you also want to watch it in game.</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
       <button onclick="loadGhosts()">Refresh</button>
+      <label class="btnlike" for="ghostFile">Upload .Ghost.Gbx</label>
+      <input type="file" id="ghostFile" accept=".gbx" multiple
+             style="display:none" onchange="uploadGhosts(this.files)">
       <span class="hint" id="ghostStatus" style="margin:0"></span>
     </div>
     <div id="ghostRows"></div>
@@ -1851,15 +1860,63 @@ async function loadGhosts() {
   $('ghostStatus').textContent = rows.length
     ? `${rows.length} found` : 'none in ~/Downloads';
   $('ghostRows').innerHTML = rows.map(g => {
-    const t = g.time_s != null ? `${g.time_s.toFixed(3)}s` : '—';
-    return `<div class="row" style="gap:8px">
-      <span class="hint" style="margin:0;min-width:70px"><b>${esc(t)}</b></span>
-      <span class="hint" style="margin:0;flex:1">${esc(g.file)}</span>
-      ${g.installed
-        ? '<span class="hint" style="margin:0"><span class="ok">installed</span></span>'
-        : `<button onclick="installGhost('${esc(g.file).replace(/'/g, "\\'")}')">Install</button>`}
+    // Prefer the time read out of the file; the filename is only a fallback,
+    // and the two disagreeing is worth seeing rather than hiding.
+    const t = g.parsed ? `${g.lap_s.toFixed(3)}s`
+                       : (g.time_s != null ? `${g.time_s.toFixed(3)}s?` : '—');
+    const q = esc(g.file).replace(/'/g, "\\'");
+    const meta = g.parsed
+      ? `${g.distance_m} m &middot; ${g.samples} samples @ ${g.rate_hz} Hz
+         &middot; top ${g.top_kmh} km/h`
+      : `<span class="warn">unreadable: ${esc(g.err || '')}</span>`;
+    return `<div style="border-top:1px solid #222;padding:6px 0">
+      <div class="row" style="gap:8px">
+        <span class="hint" style="margin:0;min-width:76px"><b>${esc(t)}</b></span>
+        <span class="hint" style="margin:0;flex:1">${esc(g.file)}</span>
+        ${g.parsed ? `<button onclick="importGhost('${q}')">Import</button>` : ''}
+        ${g.installed
+          ? '<span class="hint" style="margin:0"><span class="ok">installed</span></span>'
+          : `<button onclick="installGhost('${q}')">Install</button>`}
+      </div>
+      <div class="hint" style="margin:2px 0 0 84px">${meta}</div>
     </div>`;
-  }).join('') || '<div class="empty">No .Ghost.Gbx files in ~/Downloads.</div>';
+  }).join('') || '<div class="empty">No .Ghost.Gbx files found &mdash; upload one.</div>';
+}
+
+async function uploadGhosts(files) {
+  if (!files || !files.length) return;
+  for (const f of files) {
+    $('ghostStatus').textContent = `uploading ${f.name}...`;
+    try {
+      const r = await fetch('/api/ghosts/upload?name=' + encodeURIComponent(f.name),
+                            {method: 'POST', body: f});
+      const j = await r.json();
+      $('ghostStatus').innerHTML = j.ok
+        ? (j.parsed
+            ? `<span class="ok">${esc(f.name)}</span> &mdash; ${j.lap_s}s,
+               ${j.distance_m} m`
+            : `<span class="warn">stored but unreadable: ${esc(j.err || '')}</span>`)
+        : `<span class="warn">${esc(j.err || 'upload failed')}</span>`;
+    } catch (e) {
+      $('ghostStatus').innerHTML = '<span class="warn">upload failed</span>';
+    }
+  }
+  $('ghostFile').value = '';
+  loadGhosts();
+}
+
+async function importGhost(file) {
+  const suggested = file.replace(/\.ghost\.gbx$/i, '');
+  const name = prompt('Save the line and demo as:', suggested);
+  if (!name) return;
+  $('ghostStatus').textContent = 'importing...';
+  const r = await post('/api/ghosts/import', {file, name});
+  $('ghostStatus').innerHTML = (r && r.ok)
+    ? `<span class="ok">imported</span> &mdash; ${esc(r.line)} (${r.points} pts)
+       and ${esc(r.demo)} (${r.samples} samples, ${r.lap_s}s).
+       Pick it as the reference line, or pass it with --ghost-file.`
+    : `<span class="warn">${esc((r && r.err) || 'failed')}</span>`;
+  if (r && r.ok) { if (window.loadLines) loadLines(); }
 }
 
 async function installGhost(file) {

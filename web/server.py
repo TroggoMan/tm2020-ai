@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.parse
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -51,22 +52,35 @@ _DUMP_LOCK = threading.Lock()
 
 
 # Where downloaded ghosts are looked for, and where the game reads them from.
+GHOST_UPLOADS = os.path.join(ROOT, "ghosts")
 GHOST_SOURCES = [
+    GHOST_UPLOADS,
     os.path.expanduser("~/Downloads/Trackmania_Stuff"),
     os.path.expanduser("~/Downloads"),
 ]
+
+# The parser is pure stdlib + numpy and never touches the game, so the panel
+# can import it directly rather than shelling out to the venv.
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+try:
+    import gbx_ghost                            # noqa: E402
+except Exception:                               # noqa: BLE001
+    gbx_ghost = None
 GAME_REPLAYS = ("/mnt/4TB/SteamLibrary/steamapps/compatdata/2225070/pfx/"
                 "drive_c/users/steamuser/Documents/Trackmania/Replays")
 
 
 def _ghost_rows():
-    """Downloaded ghosts, and whether each is already installed for the game.
+    """Ghosts on disk, with whatever tools/gbx_ghost.py can read out of them.
 
-    A .Ghost.Gbx cannot be read here - the body is LZO-compressed and parsing
-    it is an unbuilt phase (see the README). What CAN be done is put it where
-    the game reads ghosts from, so it can be played and then recorded through
-    the pipeline that already exists. So this lists and installs; it does not
-    pretend to import.
+    This used to only list and install, because the body is LZO-compressed and
+    nothing here could read it. It can now: the real lap time, distance and
+    sample count come from the file itself, so a ghost no longer has to be
+    played in-game to be worth anything. The filename time is kept only as a
+    fallback for a file that fails to parse.
+
+    Parsing is cached on (size, mtime) - a listing refresh should not re-inflate
+    every ghost, and a 90-second ghost is a couple of MB of samples.
     """
     out, seen = [], set()
     installed = set()
@@ -95,11 +109,47 @@ def _ghost_rows():
                 size = os.path.getsize(full)
             except OSError:
                 size = 0
-            out.append({"file": f, "path": full, "dir": d, "size": size,
-                        "time_s": round(secs, 3) if secs else None,
-                        "installed": f in installed})
+            row = {"file": f, "path": full, "dir": d, "size": size,
+                   "time_s": round(secs, 3) if secs else None,
+                   "installed": f in installed,
+                   "uploaded": d == GHOST_UPLOADS}
+            row.update(_ghost_meta(full, size))
+            out.append(row)
     out.sort(key=lambda r: (r["time_s"] is None, r["time_s"] or 0))
     return out
+
+
+_GHOST_META: dict = {}
+
+
+def _ghost_meta(path: str, size: int) -> dict:
+    """Lap time, distance and sample count read out of the ghost itself."""
+    if gbx_ghost is None:
+        return {"parsed": False, "err": "parser unavailable"}
+    try:
+        key = (path, size, os.path.getmtime(path))
+    except OSError:
+        return {"parsed": False, "err": "unreadable"}
+    if key in _GHOST_META:
+        return _GHOST_META[key]
+    try:
+        g = gbx_ghost.load(path)
+        s = g["samples"]
+        dist = 0.0
+        for a, b in zip(s, s[1:]):
+            dist += sum((x - y) ** 2 for x, y in zip(a["pos"], b["pos"])) ** 0.5
+        meta = {"parsed": True,
+                "map_uid": g.get("map_uid"),
+                "lap_s": round(g["end"] / 1000.0, 3),
+                "samples": len(s),
+                "distance_m": round(dist, 1),
+                "top_kmh": round(max(r["speed"] for r in s) * 3.6, 1),
+                "rate_hz": round(len(s) / max(g["end"] / 1000.0, 1e-6), 1)}
+    except Exception as ex:                      # noqa: BLE001
+        meta = {"parsed": False, "err": str(ex)[:140]}
+    _GHOST_META.clear()                          # bounded: only the last listing
+    _GHOST_META[key] = meta
+    return meta
 
 
 def grid_ok(uid: str) -> bool:
@@ -2263,8 +2313,52 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, b"not found", "text/plain")
 
+    def _ghost_upload(self, length: int) -> None:
+        """Accept a .Ghost.Gbx posted as a raw body.
+
+        The name comes from a query parameter rather than the body so the whole
+        body stays the file. It is sanitised hard: this writes into the project
+        tree, and a filename is the one part of an upload the client controls.
+        """
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        name = os.path.basename((q.get("name") or [""])[0])
+        if not name.lower().endswith(".gbx"):
+            self._json({"ok": False, "err": "not a .gbx"}, 400)
+            return
+        if not re.fullmatch(r"[A-Za-z0-9 ._()\[\]-]{1,180}", name):
+            self._json({"ok": False, "err": "bad filename"}, 400)
+            return
+        if length <= 0 or length > 64 << 20:
+            self._json({"ok": False, "err": "bad size"}, 400)
+            return
+        blob = self.rfile.read(length)
+        if blob[:3] != b"GBX":
+            self._json({"ok": False, "err": "not a GBX file"}, 400)
+            return
+        os.makedirs(GHOST_UPLOADS, exist_ok=True)
+        dest = os.path.join(GHOST_UPLOADS, name)
+        tmp = dest + ".part"
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(blob)
+            os.replace(tmp, dest)
+        except OSError as ex:
+            self._json({"ok": False, "err": str(ex)[:120]})
+            return
+        # Parse straight away: an unreadable ghost should fail at upload, not
+        # silently sit in the list looking importable.
+        meta = _ghost_meta(dest, len(blob))
+        self._json({"ok": True, "file": name, **meta})
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
+
+        # Uploads carry raw bytes, so they are handled before the JSON parse -
+        # reading the body twice is not possible on a single socket.
+        if self.path.startswith("/api/ghosts/upload"):
+            self._ghost_upload(length)
+            return
+
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
@@ -2346,6 +2440,54 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/fleet/stop":
             self._json(FLEET.stop())
+            return
+
+        if self.path == "/api/ghosts/import":
+            f = (body or {}).get("file") or ""
+            row = next((r for r in _ghost_rows() if r["file"] == f), None)
+            if not row:
+                self._json({"ok": False, "err": "no such ghost"})
+                return
+            if gbx_ghost is None:
+                self._json({"ok": False, "err": "parser unavailable"})
+                return
+            name = str((body or {}).get("name") or "").strip()
+            if not name:
+                name = re.sub(r"\.ghost\.gbx$", "", f, flags=re.I)
+            if not re.fullmatch(r"[A-Za-z0-9 ._()\[\]-]{1,120}", name):
+                self._json({"ok": False, "err": "bad name"}, 400)
+                return
+            try:
+                g = gbx_ghost.load(row["path"])
+                samples = g["samples"]
+                line_p = os.path.join(ROOT, "lines", f"{name}.json")
+                demo_p = os.path.join(ROOT, "demos", f"{name}.json")
+                keep = [samples[0]["pos"]]
+                for r in samples[1:]:
+                    d = sum((a - b) ** 2 for a, b in zip(r["pos"], keep[-1])) ** 0.5
+                    if d > 0.5:
+                        keep.append(r["pos"])
+                os.makedirs(os.path.dirname(line_p), exist_ok=True)
+                os.makedirs(os.path.dirname(demo_p), exist_ok=True)
+                with open(demo_p, "w") as fh:
+                    json.dump(samples, fh)
+                with open(line_p, "w") as fh:
+                    # Stamped with the map the ghost was driven on, so the
+                    # handover can find it later - the filename is the ghost's,
+                    # not the map's.
+                    json.dump({"spacing_resampled": True,
+                               "map": g.get("map_uid"),
+                               "wr_ghost": os.path.basename(row["path"]),
+                               "lap_ms": g["end"],
+                               "points": keep}, fh)
+                self._json({"ok": True, "name": name,
+                            "line": os.path.relpath(line_p, ROOT),
+                            "demo": os.path.relpath(demo_p, ROOT),
+                            "map": g.get("map_uid"),
+                            "points": len(keep), "samples": len(samples),
+                            "lap_s": round(g["end"] / 1000.0, 3)})
+            except Exception as ex:              # noqa: BLE001
+                self._json({"ok": False, "err": str(ex)[:200]})
             return
 
         if self.path == "/api/ghosts/install":
