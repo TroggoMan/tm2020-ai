@@ -17,6 +17,8 @@ Seat selector picks which pad (8765 / 8775 / 8785 / 8795). For splitscreen
 menu setup you only ever need seat 0 - player 1 drives every menu.
 """
 import re
+import os
+import re
 import shutil
 import socket
 import subprocess
@@ -30,6 +32,9 @@ PAD_HOST = "127.0.0.1"
 # NOT on Wayland :0). Override with: python3 tools/padgui.py 8090 :100
 GAME_DISPLAY = sys.argv[2] if len(sys.argv) > 2 else ":99"
 XDOTOOL = shutil.which("xdotool")
+# Keysyms are passed to xdotool, so constrain them rather than trusting the
+# browser: letters/digits, and the named keys X uses (F3, Escape, Return...).
+KEYSYM_OK = re.compile(r"^[A-Za-z0-9_+]{1,24}$")
 
 
 def _xdo(args, disp=None):
@@ -135,6 +140,26 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
  <button data-key=Return>Enter ⏎</button>
  <span style="color:#888;font-size:12px">keyboard follows the instance selector above</span>
 </div>
+<div class=row style="align-items:center;gap:10px;flex-wrap:wrap">
+ <button id=ptbtn style="font-weight:700">Passthrough: OFF</button>
+ <label style="font-size:13px">auto-off
+  <select id=ptsecs>
+   <option value=30>30s</option><option value=60 selected>60s</option>
+   <option value=180>3m</option><option value=600>10m</option>
+  </select></label>
+ <span id=ptleft style="color:#888;font-size:12px"></span>
+ <span style="color:#888;font-size:12px">Esc exits. Every key goes to the game, including F3.</span>
+</div>
+<div class=row style="gap:10px;flex-wrap:wrap">
+ <div id=trackpad style="width:260px;height:150px;background:#191919;border:1px solid #333;
+      border-radius:8px;display:flex;align-items:center;justify-content:center;
+      color:#666;font-size:12px;touch-action:none">drag = move mouse</div>
+ <div style="display:flex;flex-direction:column;gap:6px">
+  <button data-mb=1>left click</button>
+  <button data-mb=3>right click</button>
+  <button data-key=F3 style="font-weight:700">F3 (Openplanet)</button>
+ </div>
+</div>
 <div class=hint>
  keys: <kbd>← ↑ → ↓</kbd> nav &nbsp; <kbd>Enter</kbd> A &nbsp; <kbd>Backspace</kbd> B
  &nbsp; <kbd>x</kbd> <kbd>y</kbd> &nbsp; <kbd>[</kbd> LB <kbd>]</kbd> RB
@@ -197,10 +222,92 @@ const KEYS={ArrowUp:'nav up',ArrowDown:'nav down',ArrowLeft:'nav left',ArrowRigh
  Enter:'press a',Backspace:'press b',' ':'press start','\\':'press select',
  x:'press x',y:'press y','[':'press lb',']':'press rb'};
 addEventListener('keydown',e=>{
+  if(passthrough)return;               // passthrough owns the keyboard
   if(e.target.tagName==='INPUT')return;
   let c=KEYS[e.key]; if(!c)return; e.preventDefault();
   if(c.startsWith('nav'))c+=' '+ms(); send(c);
 });
+
+// --- raw keyboard passthrough ------------------------------------------
+//
+// Everything you press goes to the game's X display as a real key event, held
+// keys included - which is the only way to reach F3 and drive the Openplanet
+// overlay when you are not sitting at the machine. It grabs the whole
+// keyboard, so it ALWAYS has a way out: Escape, the button, or the auto-off
+// timer. Getting stuck with no keyboard on a remote box is worse than not
+// having the feature.
+let passthrough=false, ptTimer=null, ptEnd=0, ptHeld=new Set();
+const NAMED={Escape:'Escape',Enter:'Return',Backspace:'BackSpace',Tab:'Tab',
+ ' ':'space',ArrowUp:'Up',ArrowDown:'Down',ArrowLeft:'Left',ArrowRight:'Right',
+ Delete:'Delete',Home:'Home',End:'End',PageUp:'Prior',PageDown:'Next',
+ Shift:'Shift_L',Control:'Control_L',Alt:'Alt_L',Meta:'Super_L'};
+function keysym(e){
+  if(/^F\d{1,2}$/.test(e.key))return e.key;
+  if(NAMED[e.key])return NAMED[e.key];
+  if(e.key.length===1){
+    const c=e.key;
+    if(/[A-Za-z0-9]/.test(c))return c;
+    const P={'-':'minus','=':'equal','[':'bracketleft',']':'bracketright',
+      ';':'semicolon',"'":'apostrophe',',':'comma','.':'period','/':'slash',
+      '\\':'backslash','`':'grave'};
+    return P[c]||null;
+  }
+  return null;
+}
+async function ptSend(path,k){
+  try{await fetch(path+'?k='+encodeURIComponent(k)+'&disp='+encodeURIComponent(disp()));}
+  catch(e){}
+}
+function ptTick(){
+  const left=Math.max(0,Math.ceil((ptEnd-Date.now())/1000));
+  $('#ptleft').textContent=passthrough?('auto-off in '+left+'s'):'';
+  if(passthrough&&left<=0)ptSet(false);
+}
+function ptSet(on){
+  passthrough=on;
+  $('#ptbtn').textContent='Passthrough: '+(on?'ON':'OFF');
+  $('#ptbtn').style.background=on?'#4d3':'';
+  $('#ptbtn').style.color=on?'#111':'';
+  if(on){ptEnd=Date.now()+(+$('#ptsecs').value)*1000;
+    if(!ptTimer)ptTimer=setInterval(ptTick,250);}
+  else{ // never leave a key stuck down on the game
+    ptHeld.forEach(k=>ptSend('/keyup',k)); ptHeld.clear();
+    clearInterval(ptTimer); ptTimer=null; $('#ptleft').textContent='';}
+  ptTick();
+}
+$('#ptbtn').onclick=()=>ptSet(!passthrough);
+addEventListener('keydown',e=>{
+  if(!passthrough)return;
+  if(e.key==='Escape'){e.preventDefault();ptSet(false);return;}
+  const k=keysym(e); if(!k)return;
+  e.preventDefault();
+  ptEnd=Date.now()+(+$('#ptsecs').value)*1000;   // activity extends the timer
+  if(!ptHeld.has(k)){ptHeld.add(k);ptSend('/keydown',k);}
+});
+addEventListener('keyup',e=>{
+  if(!passthrough)return;
+  const k=keysym(e); if(!k)return;
+  e.preventDefault();
+  if(ptHeld.delete(k))ptSend('/keyup',k);
+});
+addEventListener('blur',()=>{if(passthrough)ptSet(false);});
+
+// --- mouse -------------------------------------------------------------
+(function(){
+  const tp=$('#trackpad'); let last=null;
+  const move=(x,y)=>{
+    if(last){const dx=x-last[0],dy=y-last[1];
+      if(Math.abs(dx)>0||Math.abs(dy)>0)
+        fetch('/mousemove?dx='+Math.round(dx)+'&dy='+Math.round(dy)
+              +'&disp='+encodeURIComponent(disp())).catch(()=>{});}
+    last=[x,y];
+  };
+  tp.addEventListener('pointerdown',e=>{tp.setPointerCapture(e.pointerId);last=[e.clientX,e.clientY];});
+  tp.addEventListener('pointermove',e=>{if(last)move(e.clientX,e.clientY);});
+  tp.addEventListener('pointerup',()=>{last=null;});
+  document.querySelectorAll('[data-mb]').forEach(b=>b.onclick=()=>
+    fetch('/click?b='+b.dataset.mb+'&disp='+encodeURIComponent(disp())).catch(()=>{}));
+})();
 </script></body></html>"""
 
 
@@ -228,6 +335,34 @@ class H(BaseHTTPRequestHandler):
             if not keys:
                 return self._send(400, "empty keys")
             return self._send(200, _xdo(["key", "--clearmodifiers", keys], disp))
+        if u.path in ("/keydown", "/keyup"):
+            # Held keys need down/up as separate events - `xdotool key` taps,
+            # which is wrong for anything you hold (menus that scroll, a key
+            # the game samples per frame).
+            q = urllib.parse.parse_qs(u.query)
+            k = q.get("k", [""])[0].strip()
+            disp = q.get("disp", [None])[0]
+            if not k or len(k) > 24 or not KEYSYM_OK.match(k):
+                return self._send(400, "bad keysym")
+            verb = "keydown" if u.path == "/keydown" else "keyup"
+            return self._send(200, _xdo([verb, k], disp))
+        if u.path == "/mousemove":
+            q = urllib.parse.parse_qs(u.query)
+            disp = q.get("disp", [None])[0]
+            try:
+                dx = max(-400, min(400, int(float(q.get("dx", ["0"])[0]))))
+                dy = max(-400, min(400, int(float(q.get("dy", ["0"])[0]))))
+            except ValueError:
+                return self._send(400, "bad delta")
+            return self._send(200, _xdo(
+                ["mousemove_relative", "--", str(dx), str(dy)], disp))
+        if u.path == "/click":
+            q = urllib.parse.parse_qs(u.query)
+            disp = q.get("disp", [None])[0]
+            b = q.get("b", ["1"])[0]
+            if b not in ("1", "2", "3", "4", "5"):
+                return self._send(400, "bad button")
+            return self._send(200, _xdo(["click", b], disp))
         if u.path == "/type":
             q = urllib.parse.parse_qs(u.query)
             text = q.get("text", [""])[0]
@@ -257,7 +392,11 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    BIND = os.environ.get("PADGUI_BIND", "0.0.0.0")
+    if BIND not in ("127.0.0.1", "localhost"):
+        print(f"  !! binding {BIND}:{PORT} - this drives the game's keyboard, "
+              f"mouse and gamepad. No auth. LAN/VPN only.", flush=True)
+    srv = ThreadingHTTPServer((BIND, PORT), H)
     print(f"pad gui on http://127.0.0.1:{PORT}  (pads {PAD_HOST}:8765/8775/8785/8795)",
           flush=True)
     try:
