@@ -897,9 +897,37 @@ def main():
         # wall-clock. Resuming without it throws that away and relearns blind.
         buf = path + "_buffer.pkl"
         if os.path.exists(buf):
-            model.load_replay_buffer(path + "_buffer")
-            print(f"  replay buffer restored: {model.replay_buffer.size()} transitions",
-                  flush=True)
+            # A HALF-WRITTEN BUFFER MUST NOT TAKE THE RUN DOWN.
+            #
+            # The pickle is ~5GB and is written on every checkpoint, so a stop
+            # (or anything else) landing mid-write leaves a truncated file that
+            # raises UnpicklingError on load. Unguarded that killed the trainer
+            # at startup, and under systemd's Restart=on-failure it then
+            # crash-looped: the run never came back and the cars sat parked
+            # while the pads timed out to neutral.
+            #
+            # The buffer is expensive but it is NOT the model. Losing it costs
+            # replay data; refusing to start costs everything. So warn loudly,
+            # move the bad file aside so the next checkpoint cannot append to
+            # it, and carry on with an empty buffer.
+            try:
+                model.load_replay_buffer(path + "_buffer")
+                print(f"  replay buffer restored: "
+                      f"{model.replay_buffer.size()} transitions", flush=True)
+            except Exception as ex:                            # noqa: BLE001
+                bad = f"{buf}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+                try:
+                    os.rename(buf, bad)
+                except OSError:
+                    bad = "(could not rename it)"
+                print(f"  !! REPLAY BUFFER IS UNREADABLE and has been set "
+                      f"aside:\n     {type(ex).__name__}: {ex}\n"
+                      f"     moved to {bad}\n"
+                      f"     Starting with an EMPTY buffer. The weights are "
+                      f"intact - only the stored experience is lost, and it "
+                      f"refills at {'%d' % (40 * 4)} transitions/s. Usually "
+                      f"means a checkpoint was interrupted mid-write.",
+                      flush=True)
         else:
             print("  no saved replay buffer - starting with an empty one", flush=True)
     else:
