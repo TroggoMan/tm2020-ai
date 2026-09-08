@@ -516,6 +516,19 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     <div class="hint" id="nnHint"></div>
   </section>
 
+  <section>
+    <h2>Ghosts</h2>
+    <div class="hint">A .Ghost.Gbx cannot be read here &mdash; the body is
+      LZO-compressed and parsing it is unbuilt. What this does is put it where
+      the game reads ghosts from, so you can play it and record it with the
+      recorder above. Install &rarr; play it in game &rarr; Record.</div>
+    <div class="row">
+      <button onclick="loadGhosts()">Refresh</button>
+      <span class="hint" id="ghostStatus" style="margin:0"></span>
+    </div>
+    <div id="ghostRows"></div>
+  </section>
+
   <section class="wide">
     <h2>Tuning</h2>
     <div class="row">
@@ -1827,6 +1840,35 @@ async function fleetStart() {
       `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
   }
   tick();
+}
+
+// -- downloaded ghosts -----------------------------------------------------
+async function loadGhosts() {
+  let j;
+  try { j = await (await fetch('/api/ghosts')).json(); }
+  catch { $('ghostStatus').textContent = 'panel not reachable'; return; }
+  const rows = j.ghosts || [];
+  $('ghostStatus').textContent = rows.length
+    ? `${rows.length} found` : 'none in ~/Downloads';
+  $('ghostRows').innerHTML = rows.map(g => {
+    const t = g.time_s != null ? `${g.time_s.toFixed(3)}s` : '—';
+    return `<div class="row" style="gap:8px">
+      <span class="hint" style="margin:0;min-width:70px"><b>${esc(t)}</b></span>
+      <span class="hint" style="margin:0;flex:1">${esc(g.file)}</span>
+      ${g.installed
+        ? '<span class="hint" style="margin:0"><span class="ok">installed</span></span>'
+        : `<button onclick="installGhost('${esc(g.file).replace(/'/g, "\\'")}')">Install</button>`}
+    </div>`;
+  }).join('') || '<div class="empty">No .Ghost.Gbx files in ~/Downloads.</div>';
+}
+
+async function installGhost(file) {
+  $('ghostStatus').textContent = 'copying...';
+  const r = await post('/api/ghosts/install', {file});
+  $('ghostStatus').innerHTML = (r && r.ok)
+    ? `<span class="ok">installed</span> &mdash; open it in game, then Record`
+    : `<span class="warn">${esc((r && r.err) || 'failed')}</span>`;
+  loadGhosts();
 }
 
 // -- pace, inside Tuning -------------------------------------------------

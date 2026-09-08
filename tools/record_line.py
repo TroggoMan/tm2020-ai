@@ -108,11 +108,26 @@ def main():
                     help="metres of positional jump that counts as a restart")
     ap.add_argument("--laps", type=int, default=1,
                     help="stop after this many complete laps (0 = never)")
+    ap.add_argument("--from-restart", dest="from_restart",
+                    action="store_true", default=None,
+                    help="discard everything before the first lap boundary, so "
+                         "the capture starts where the LAP does. Default ON for "
+                         "replay/auto and off for live. Without it, attaching "
+                         "to a looping ghost mid-lap keeps the partial lap - "
+                         "which as demonstration data means the first input is "
+                         "for a car already at speed halfway round, replayed "
+                         "onto one sitting at the line.")
+    ap.add_argument("--no-from-restart", dest="from_restart",
+                    action="store_false")
     ap.add_argument("--expect-time", type=float, default=None,
                     help="the replay's time in seconds, to sanity-check the capture")
     ap.add_argument("--demo", metavar="FILE",
                     help="also write (state, action) samples here for demo seeding")
     args = ap.parse_args()
+    # A replay loops, so waiting for a boundary always terminates. A live
+    # run happens once, so waiting for one would never start.
+    if args.from_restart is None:
+        args.from_restart = args.mode in ('replay', 'auto')
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
@@ -135,6 +150,7 @@ def main():
     last_move = time.time()
     t_first = t_last = None
     laps = 0
+    seen_restart = not args.from_restart
     seen: dict[tuple, int] = {}
     last_report = 0.0
 
@@ -193,6 +209,17 @@ def main():
             # the only lap boundary available when there is no player API to
             # give us a "finished" flag.
             if pts and np.linalg.norm(p - pts[-1]) > args.lap_gap:
+                if args.from_restart and not seen_restart:
+                    # First boundary only marks where a lap BEGINS - whatever
+                    # came before it is the tail of a lap already in progress.
+                    seen_restart = True
+                    print(f"\n  lap boundary - discarding {len(pts)} points "
+                          f"captured mid-lap; recording starts here")
+                    pts.clear()
+                    if args.demo:
+                        demo.clear()
+                    t_first = None
+                    continue
                 laps += 1
                 print(f"\n  lap {laps} complete: {len(pts)} points")
                 if args.laps and laps >= args.laps:

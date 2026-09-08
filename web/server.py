@@ -50,6 +50,58 @@ VENV_PY = os.path.join(ROOT, ".venv", "bin", "python")
 _DUMP_LOCK = threading.Lock()
 
 
+# Where downloaded ghosts are looked for, and where the game reads them from.
+GHOST_SOURCES = [
+    os.path.expanduser("~/Downloads/Trackmania_Stuff"),
+    os.path.expanduser("~/Downloads"),
+]
+GAME_REPLAYS = ("/mnt/4TB/SteamLibrary/steamapps/compatdata/2225070/pfx/"
+                "drive_c/users/steamuser/Documents/Trackmania/Replays")
+
+
+def _ghost_rows():
+    """Downloaded ghosts, and whether each is already installed for the game.
+
+    A .Ghost.Gbx cannot be read here - the body is LZO-compressed and parsing
+    it is an unbuilt phase (see the README). What CAN be done is put it where
+    the game reads ghosts from, so it can be played and then recorded through
+    the pipeline that already exists. So this lists and installs; it does not
+    pretend to import.
+    """
+    out, seen = [], set()
+    installed = set()
+    try:
+        for f in os.listdir(GAME_REPLAYS):
+            if f.lower().endswith(".ghost.gbx"):
+                installed.add(f)
+    except OSError:
+        pass
+    for d in GHOST_SOURCES:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for f in names:
+            if not f.lower().endswith(".ghost.gbx") or f in seen:
+                continue
+            seen.add(f)
+            full = os.path.join(d, f)
+            # Times are in the filename as (mm_ss_mmm) - the only metadata
+            # available without parsing the body.
+            m = re.search(r"\((\d+)_(\d+)_(\d+)\)", f)
+            secs = (int(m.group(1)) * 60 + int(m.group(2)) + int(m.group(3)) / 1000.0
+                    if m else None)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            out.append({"file": f, "path": full, "dir": d, "size": size,
+                        "time_s": round(secs, 3) if secs else None,
+                        "installed": f in installed})
+    out.sort(key=lambda r: (r["time_s"] is None, r["time_s"] or 0))
+    return out
+
+
 def grid_ok(uid: str) -> bool:
     """Does this map have a USABLE occupancy grid on disk?
 
@@ -1998,6 +2050,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({})
             return
 
+        if self.path == "/api/ghosts":
+            self._json({"ghosts": _ghost_rows(), "replays": GAME_REPLAYS})
+            return
+
         if self.path == "/api/archive":
             self._json({"models": list_models(),
                         "archive": {m: list_archive(m) for m in list_models()}})
@@ -2290,6 +2346,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/fleet/stop":
             self._json(FLEET.stop())
+            return
+
+        if self.path == "/api/ghosts/install":
+            f = (body or {}).get("file") or ""
+            row = next((r for r in _ghost_rows() if r["file"] == f), None)
+            if not row:
+                self._json({"ok": False, "err": "no such ghost"})
+                return
+            try:
+                os.makedirs(GAME_REPLAYS, exist_ok=True)
+                shutil.copy2(row["path"], os.path.join(GAME_REPLAYS, f))
+                self._json({"ok": True, "file": f, "to": GAME_REPLAYS})
+            except OSError as ex:
+                self._json({"ok": False, "err": str(ex)})
             return
 
         if self.path == "/api/padgui/start":

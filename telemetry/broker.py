@@ -32,6 +32,8 @@ class Broker:
         self.latest: dict | None = None
         self.lines = 0
         self.connected_since: float | None = None
+        self.last_data = time.time()
+        self.stale_after = 10.0
 
     # -- upstream ---------------------------------------------------------
 
@@ -43,6 +45,7 @@ class Broker:
                     self.up = socket.create_connection(self.upstream_addr, timeout=5)
                     self.up.settimeout(1.0)
                     self.connected_since = time.time()
+                    self.last_data = time.time()
                     print(f"upstream connected {self.upstream_addr}", flush=True)
                 except OSError:
                     time.sleep(2.0)
@@ -50,6 +53,33 @@ class Broker:
             try:
                 data = self.up.recv(65536)
             except socket.timeout:
+                # A SILENT upstream is not a healthy one.
+                #
+                # The socket staying OPEN while the plugin stops producing is a
+                # real state, not a theoretical one: an Openplanet reload or a
+                # game session change leaves 8766 listening and answering the
+                # connect while the plugin's coroutine emits nothing. Before
+                # this, that looped here forever - the broker looked healthy,
+                # every consumer blocked on readline(), and the whole stack
+                # read as "the recorder is broken" / "the cars are stuck". It
+                # cost hours before anyone thought to check the plugin's own
+                # log. Reconnecting is cheap and idempotent; sitting on a dead
+                # stream is not.
+                if (self.stale_after > 0
+                        and time.time() - self.last_data > self.stale_after):
+                    print(f"upstream SILENT for {self.stale_after:.0f}s "
+                          f"(socket still open) - dropping and reconnecting. "
+                          f"If this repeats, the plugin itself has stopped "
+                          f"emitting: check Openplanet.log and reload "
+                          f"TMAITelemetry (F3 -> Plugins).", flush=True)
+                    try:
+                        self.up.close()
+                    except OSError:
+                        pass
+                    self.up = None
+                    self.connected_since = None
+                    buf = b""
+                    time.sleep(1.0)
                 continue
             except OSError:
                 data = b""
@@ -65,6 +95,7 @@ class Broker:
                 time.sleep(1.0)
                 continue
 
+            self.last_data = time.time()
             buf += data
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
