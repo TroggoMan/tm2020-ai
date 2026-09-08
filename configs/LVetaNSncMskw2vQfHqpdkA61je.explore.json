@@ -103,7 +103,7 @@
     "binary_brake": true,
     "gas_threshold": 0,
     "brake_threshold": 1.05,
-    "steer_rate": 8,
+    "steer_rate": 0.0,
     "steer_levels": 10
   },
   "surfaces": {},

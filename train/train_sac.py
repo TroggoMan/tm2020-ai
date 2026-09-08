@@ -730,6 +730,17 @@ def main():
                          "its completed laps and was training on a buffer with "
                          "no example of finishing at all. ~1KB per transition, "
                          "so 2M is about 2GB of RAM")
+    ap.add_argument("--ent-coef", default="auto",
+                    help="SAC's entropy coefficient. 'auto' tunes it to hit "
+                         "--target-entropy, which is the mechanism that broke "
+                         "this project repeatedly: restoring a deterministic "
+                         "policy onto an empty buffer sends it 0.02 -> 1.66 in "
+                         "minutes and the policy dissolves before the critic "
+                         "can fit anything. A FIXED number removes the "
+                         "feedback loop - 0.02 is where healthy snapshots of "
+                         "this driver sat. Costs the automatic exploration "
+                         "schedule, which is a fair trade when the automatic "
+                         "one runs away.")
     ap.add_argument("--target-entropy", default="auto",
                     type=lambda v: v if v == "auto" else float(v),
                     help="how much randomness SAC insists on keeping. 'auto' "
@@ -1000,7 +1011,7 @@ def main():
             gradient_steps=grad,
             tau=0.005,
             gamma=0.995,
-            ent_coef="auto",
+            ent_coef=args.ent_coef,
             # How much randomness SAC insists on keeping. There IS an entropy
             # collapse on this env - ent_coef falls 0.86 -> 0.02 by episode 100
             # and the run's best stretch is the one where it was still ~0.09 -
