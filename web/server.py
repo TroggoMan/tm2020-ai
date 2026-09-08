@@ -2100,6 +2100,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({})
             return
 
+        if self.path == "/api/demos":
+            out = []
+            d = os.path.join(ROOT, "demos")
+            try:
+                for f in sorted(os.listdir(d)):
+                    if not f.endswith(".json"):
+                        continue
+                    line = os.path.join(ROOT, "lines", f)
+                    uid = None
+                    try:
+                        with open(line) as fh:
+                            uid = json.load(fh).get("map")
+                    except (OSError, ValueError):
+                        pass
+                    out.append({"file": f, "map": uid,
+                                "size": os.path.getsize(os.path.join(d, f))})
+            except OSError:
+                pass
+            self._json({"demos": out})
+            return
+
         if self.path == "/api/ghosts":
             self._json({"ghosts": _ghost_rows(), "replays": GAME_REPLAYS})
             return
@@ -2462,11 +2483,9 @@ class Handler(BaseHTTPRequestHandler):
                 samples = g["samples"]
                 line_p = os.path.join(ROOT, "lines", f"{name}.json")
                 demo_p = os.path.join(ROOT, "demos", f"{name}.json")
-                keep = [samples[0]["pos"]]
-                for r in samples[1:]:
-                    d = sum((a - b) ** 2 for a, b in zip(r["pos"], keep[-1])) ** 0.5
-                    if d > 0.5:
-                        keep.append(r["pos"])
+                # True 0.5 m spacing by interpolation. Only dropping close
+                # points could never beat the ghost's own ~3.6 m sampling.
+                keep = gbx_ghost.resample_line([r["pos"] for r in samples], 0.5)
                 os.makedirs(os.path.dirname(line_p), exist_ok=True)
                 os.makedirs(os.path.dirname(demo_p), exist_ok=True)
                 with open(demo_p, "w") as fh:
@@ -2636,6 +2655,16 @@ class Handler(BaseHTTPRequestHandler):
             # local checkpoint.
             if str(body.get("init_from") or "").strip():
                 argv += ["--init-from", str(body["init_from"]).strip()]
+            # A ghost demo drives the warm-up with a world record's own inputs
+            # and pursuit continues where it runs out. Race stage only: explore
+            # has no reference line for the record to be a record OF.
+            gf = str(body.get("ghost_file") or "").strip()
+            if gf and stage != "explore":
+                gp = gf if os.path.isabs(gf) else os.path.join(ROOT, "demos", gf)
+                if not os.path.exists(gp):
+                    self._json({"ok": False, "err": f"no such demo: {gf}"}, 400)
+                    return
+                argv += ["--ghost-file", gp]
             # Warm-up length / noise, buffer size, snapshot cadence - launch
             # only, same reason as control-hz above.
             if body.get("learning_starts") not in (None, "", 0):

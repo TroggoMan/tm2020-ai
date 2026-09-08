@@ -363,6 +363,46 @@ def _decode_vehicle(times: np.ndarray, samples: np.ndarray) -> list[dict]:
     return out
 
 
+def resample_line(points: list, spacing: float = 0.5) -> list:
+    """Re-space a line to a true fixed interval along its arc length.
+
+    The old approach only DROPPED points that were closer together than the
+    spacing, so it could never produce points that were not already in the
+    ghost. A 20 Hz ghost at 260 km/h samples every ~3.6 m, so asking for 0.5 m
+    returned the raw 3.6 m samples and quietly claimed to be 0.5 m spaced.
+    This interpolates, so the spacing is real.
+
+    Linear between samples rather than a spline: on a 3.6 m chord the chord
+    cuts ~3 cm off a 50 m radius corner, which is nothing against a track 8-16 m
+    wide, and a spline can overshoot outside the road on a hairpin - a much
+    worse failure than 3 cm.
+    """
+    pts = [tuple(p) for p in points]
+    if len(pts) < 2 or spacing <= 0:
+        return [list(p) for p in pts]
+    # Drop exact repeats; a zero-length segment has no direction to walk along.
+    clean = [pts[0]]
+    for p in pts[1:]:
+        if math.dist(p, clean[-1]) > 1e-6:
+            clean.append(p)
+    if len(clean) < 2:
+        return [list(p) for p in clean]
+
+    out = [clean[0]]
+    carry = 0.0
+    for a, b in zip(clean, clean[1:]):
+        seg = math.dist(a, b)
+        t = spacing - carry
+        while t <= seg:
+            f = t / seg
+            out.append(tuple(a[i] + (b[i] - a[i]) * f for i in range(3)))
+            t += spacing
+        carry = seg - (t - spacing)
+    if math.dist(out[-1], clean[-1]) > spacing * 0.25:
+        out.append(clean[-1])
+    return [[round(v, 5) for v in p] for p in out]
+
+
 def load(path: str) -> dict:
     body = read_body(path)
     uid = map_uid(body)
@@ -439,10 +479,7 @@ def main() -> None:
         print(f"  wrote {a.demo}  ({len(s)} samples)")
 
     if a.line:
-        keep = [s[0]["pos"]]
-        for r in s[1:]:
-            if math.dist(r["pos"], keep[-1]) > a.min_step:
-                keep.append(r["pos"])
+        keep = resample_line([r["pos"] for r in s], a.min_step)
         os.makedirs(os.path.dirname(a.line) or ".", exist_ok=True)
         with open(a.line, "w") as f:
             json.dump({"spacing_resampled": True, "map": g["map_uid"],
