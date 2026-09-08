@@ -124,9 +124,14 @@ class GhostDriver:
     shared index would hand seat 2 the input for a lap position seat 0 is at.
     """
 
-    def __init__(self, actions: np.ndarray, n_envs: int = 1):
+    def __init__(self, actions: np.ndarray, n_envs: int = 1,
+                 hz: float = 0.0):
         self.actions = np.asarray(actions, dtype=np.float32)
         self.idx = [0] * max(1, n_envs)
+        # The rate the actions were resampled onto, so a race clock in
+        # milliseconds can be turned into an index. 0 means "not time-indexed"
+        # and the cursor just counts steps, as it used to.
+        self.hz = float(hz)
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -134,6 +139,26 @@ class GhostDriver:
     def reset_env(self, i: int) -> None:
         if 0 <= i < len(self.idx):
             self.idx[i] = 0
+
+    def sync(self, i: int, race_time_ms) -> None:
+        """Put seat i's cursor where the RACE CLOCK says it should be.
+
+        The cursor used to be a step counter, which is only equivalent to time
+        if every step advances the clock by exactly 1/hz. It does not: the
+        countdown, the respawn settle and any dropped frame all consume steps
+        while the race clock stands still. Each one shifts the whole remaining
+        lap earlier by that much, permanently, because nothing ever pulled the
+        cursor back - so the car turned before it reached the corner, at any
+        control rate.
+
+        Indexing on the clock makes those free. During the countdown race_time
+        is 0 or absent, so the cursor sits on the first input and the record
+        starts when the car is actually released.
+        """
+        if self.hz <= 0 or not (0 <= i < len(self.idx)) or race_time_ms is None:
+            return
+        k = int(round(float(race_time_ms) / 1000.0 * self.hz))
+        self.idx[i] = max(0, min(k, len(self.actions)))
 
     def batch(self, n_envs: int) -> tuple[np.ndarray, np.ndarray]:
         """Returns (actions, live) - `live[i]` is False where the ghost is spent.

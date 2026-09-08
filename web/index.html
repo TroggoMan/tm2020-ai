@@ -353,9 +353,11 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     </div>
     <div class="row">
       <label title="Control loop rate. 20Hz gives each step a 50ms budget. Changing it invalidates a resumed buffer.">control Hz</label>
-      <input type="number" id="trControlHz" value="20" step="5" min="5" style="max-width:70px">
+      <input type="number" id="trControlHz" value="40" step="5" min="5" max="200"
+             style="max-width:110px;min-width:110px" title="Policy decisions per second. 40 is the value the models were trained at. A number input this narrow hid what was being typed, and a 40 typed into a field holding 20 became 4020 - which resampled the ghost to 115,978 inputs and made the car turn far too late.">
       <label title="SAC gradient updates per control step. Blank = auto; 2 is the safe explicit value.">grad steps</label>
-      <input type="number" id="trGradSteps" value="2" step="1" min="1" style="max-width:70px" placeholder="auto">
+      <input type="number" id="trGradSteps" value="2" step="1" min="1" max="64"
+             style="max-width:110px;min-width:110px" placeholder="auto">
       <label title="Also copy every checkpoint and new best to this shared path. Blank = off.">promote to</label>
       <input type="text" id="trPromote" value="models/driver.zip" style="max-width:150px" placeholder="none">
       <label title="Warm-start a fresh run from this .zip (weights only). Blank = random init.">init from</label>

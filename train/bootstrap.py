@@ -59,7 +59,7 @@ class BootstrapSAC(SAC):
                 # would otherwise replay the lap at double speed.
                 acts = load_ghost(ghost_file, hz=control_hz)
                 if len(acts):
-                    self.ghost = GhostDriver(acts)
+                    self.ghost = GhostDriver(acts, hz=control_hz)
                     print(f"ghost warm-up: {len(acts)} inputs from "
                           f"{ghost_file} at {control_hz:g}Hz "
                           f"({len(acts)/control_hz:.1f}s)", flush=True)
@@ -69,6 +69,8 @@ class BootstrapSAC(SAC):
             except Exception as ex:                            # noqa: BLE001
                 print(f"could not load ghost {ghost_file}: {ex} - "
                       f"falling back to '{bootstrap}'", flush=True)
+        # Per-seat race clock, filled from info in _store_transition.
+        self._ghost_clock: dict = {}
         self.bootstrap_random = float(bootstrap_random)
         self.bootstrap_jitter = float(bootstrap_jitter)
         # Hints are performed during the warm-up so the buffer contains real
@@ -90,6 +92,23 @@ class BootstrapSAC(SAC):
         # would come out 40ms long on three instances.
         self._bootstrap_steps = 0
 
+    def _store_transition(self, replay_buffer, buffer_action, new_obs, reward,
+                          dones, infos):
+        """Record each seat's race clock, so the ghost can be indexed on it.
+
+        This is the only hook that sees `infos`, and the env already puts
+        `race_time` there. Captured here and applied in _sample_action, which
+        is one control step of latency - 25ms at 40Hz, far less than the drift
+        a step-counted cursor accumulated over a lap.
+        """
+        if self.ghost is not None:
+            for i, inf in enumerate(infos or ()):
+                rt = (inf or {}).get("race_time") if isinstance(inf, dict) else None
+                if rt is not None:
+                    self._ghost_clock[i] = rt
+        return super()._store_transition(replay_buffer, buffer_action, new_obs,
+                                         reward, dones, infos)
+
     def _sample_action(self, learning_starts, action_noise=None, n_envs=1):
         warming = self.num_timesteps < learning_starts and not (
             self.use_sde and self.use_sde_at_warmup)
@@ -106,6 +125,8 @@ class BootstrapSAC(SAC):
         # pursuit is strictly better than either alone.
         ghost_unscaled = ghost_live = None
         if self.ghost is not None:
+            for i, rt in self._ghost_clock.items():
+                self.ghost.sync(i, rt)
             ghost_unscaled, ghost_live = self.ghost.batch(n_envs)
             ghost_unscaled = ghost_unscaled.astype(np.float64)
             if not ghost_live.any():
@@ -212,4 +233,9 @@ class HintRelay(BaseCallback):
                 for i, d in enumerate(dones):
                     if d:
                         ghost.reset_env(i)
+                        # Drop the finished episode's clock too. Left behind,
+                        # the next episode's first _sample_action would sync
+                        # the cursor to the END of the old lap before the new
+                        # episode has reported a clock of its own.
+                        self.model._ghost_clock.pop(i, None)
         return True

@@ -2645,7 +2645,22 @@ class Handler(BaseHTTPRequestHandler):
             # to pass them at launch or the run silently reverts to 40Hz / auto
             # gradient steps - the combination that let slip climb.
             if body.get("control_hz") not in (None, "", 0):
-                argv += ["--control-hz", str(float(body["control_hz"]))]
+                # Refuse a rate the machine cannot possibly run. A typo in the
+                # numeric field started a run at 4020Hz, which resampled the
+                # ghost to 115,978 inputs and quietly ruined every transition
+                # in the buffer. The trainer cannot tell a typo from intent, so
+                # the bound belongs here, where the value is entered.
+                try:
+                    hz = float(body["control_hz"])
+                except (TypeError, ValueError):
+                    self._json({"ok": False, "err": "control-hz must be a number"}, 400)
+                    return
+                if not 5.0 <= hz <= 200.0:
+                    self._json({"ok": False, "err": f"control-hz {hz:g} is out of "
+                                f"range (5-200). The game simulates at 100Hz; "
+                                f"the models here were trained at 40."}, 400)
+                    return
+                argv += ["--control-hz", str(hz)]
             if str(body.get("gradient_steps") or "").strip():
                 argv += ["--gradient-steps", str(int(body["gradient_steps"]))]
             if str(body.get("promote_to") or "").strip():
