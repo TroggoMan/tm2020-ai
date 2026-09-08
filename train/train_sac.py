@@ -176,9 +176,14 @@ def save_buffer_atomic(model, path: str) -> None:
     Costs 2x the space transiently. Cheap next to losing 4M transitions.
     """
     dest = path + "_buffer.pkl"
-    tmp = path + "_buffer.writing"
-    model.save_replay_buffer(tmp)          # SB3 appends .pkl
-    tmp_pkl = tmp + ".pkl"
+    # Give SB3 a path that ALREADY ends in .pkl and it writes exactly that.
+    # It only appends the extension when the path has no suffix, so an obvious
+    # temp name like "_buffer.writing" is left as-is - which is how the first
+    # version of this looked for "_buffer.writing.pkl" and crashed every
+    # checkpoint with FileNotFoundError. A fake model in the unit test appended
+    # .pkl unconditionally and hid it; test against the real save path.
+    tmp_pkl = path + "_buffer.tmp.pkl"
+    model.save_replay_buffer(tmp_pkl)
     # Force it to disk before the rename, so a crash right after cannot leave
     # the new name pointing at data still sitting in the page cache.
     with open(tmp_pkl, "rb") as fh:
