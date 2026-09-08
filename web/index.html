@@ -516,6 +516,25 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
     <div class="hint" id="nnHint"></div>
   </section>
 
+  <section>
+    <h2>Pace calculator</h2>
+    <div class="hint">Type any two and the third is worked out. par_speed is
+      stored in m/s but edited here and in Tuning as km/h, so this is also how
+      you check what a par speed is actually asking for.</div>
+    <div class="row">
+      <label style="min-width:auto">line (m)</label>
+      <input type="number" id="calcLen" step="1" style="max-width:110px" oninput="pace('len')">
+      <label style="min-width:auto">lap (s)</label>
+      <input type="number" id="calcTime" step="0.01" style="max-width:110px" oninput="pace('time')">
+      <label style="min-width:auto">avg (km/h)</label>
+      <input type="number" id="calcSpeed" step="0.1" style="max-width:110px" oninput="pace('speed')">
+    </div>
+    <div class="hint" id="calcOut" style="margin-top:6px"></div>
+    <div class="row">
+      <button onclick="paceFromRun()" title="Fill in the line length of the map currently being tuned.">Use current map</button>
+    </div>
+  </section>
+
   <section class="wide">
     <h2>Tuning</h2>
     <div class="row">
@@ -1607,6 +1626,8 @@ const FIELD = {
   'line.max_offset':       ['off-line limit (m)', 1, 'Metres from the reference line before the episode ends.'],
   'line.soft_offset':      ['free corridor (m)', 1, 'How far it may stray from the line for free. Distance, not drift.'],
   'line.w_soft':           ['off-line penalty', 0.005, 'Per metre per step outside the free corridor.'],
+  'reward.par_ladder':     ['par ladder (km/h)', null, 'Comma-separated par speeds, ascending. Each rung advances when the MEDIAN of the last N finishes reaches the lap time that rung is asking for (line length / par). Blank = manual par_speed.'],
+  'reward.par_ladder_window': ['ladder window (finishes)', 5, 'How many recent finishes the median is taken over before a rung can be earned.'],
   'reward.w_finish_speed': ['finish speed bonus', 5, 'Extra pay for the SPEED at the finish crossing. The flat finish bonus is speed-blind, so nothing asks the car to keep its foot in over the line. 0 = off; worth turning on only if it lifts well before the gate.'],
   'reward.finish_speed_ref': ['finish speed ref (km/h)', 10, 'Speed that counts as a full-pace crossing. The bonus is w * min(speed/ref, 1.5).'],
   'stuck.never_moved_s':   ['never-moved cutoff (s)', 1, 'Seconds a car may sit having NEVER moved before the episode ends. The other stuck checks only apply once it has moved at least once, so without this a dead seat runs the full episode cap doing nothing. 0 disables.'],
@@ -1806,6 +1827,50 @@ async function fleetStart() {
       `<span class="warn">${esc((r && r.err) || 'no reply')}</span>`;
   }
   tick();
+}
+
+// -- pace calculator -------------------------------------------------------
+//
+// length / time / average speed: any two give the third. Kept here rather than
+// as arithmetic in the head because par_speed is stored in m/s, edited in
+// km/h, and its whole meaning is "the lap time I am asking for" - which is a
+// division nobody should be doing by hand while tuning.
+function pace(edited) {
+  const L = parseFloat($('calcLen').value);
+  const T = parseFloat($('calcTime').value);
+  const V = parseFloat($('calcSpeed').value);
+  const ok = x => Number.isFinite(x) && x > 0;
+  let out = '';
+  // Recompute whichever field the user did NOT just touch.
+  if (edited !== 'speed' && ok(L) && ok(T)) {
+    const v = (L / T) * 3.6;
+    $('calcSpeed').value = v.toFixed(1);
+    out = `${L.toFixed(0)} m in ${T.toFixed(2)} s = <b>${v.toFixed(1)} km/h</b> average`;
+  } else if (edited !== 'time' && ok(L) && ok(V)) {
+    const t = L / (V / 3.6);
+    $('calcTime').value = t.toFixed(2);
+    out = `${L.toFixed(0)} m at ${V.toFixed(1)} km/h = <b>${t.toFixed(2)} s</b> lap`;
+  } else if (edited !== 'len' && ok(T) && ok(V)) {
+    const l = (V / 3.6) * T;
+    $('calcLen').value = l.toFixed(0);
+    out = `${V.toFixed(1)} km/h for ${T.toFixed(2)} s = <b>${l.toFixed(0)} m</b>`;
+  }
+  const v2 = parseFloat($('calcSpeed').value);
+  if (out && Number.isFinite(v2)) {
+    out += ` &mdash; as par_speed that is <b>${(v2 / 3.6).toFixed(3)}</b> in the config`;
+  }
+  $('calcOut').innerHTML = out;
+}
+
+// Fill the length from the map being tuned, so the numbers are about the track
+// in front of you rather than one typed from memory.
+async function paceFromRun() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const L = (s.line_info || {}).length || (s.line || {}).length || s.line_length;
+    if (L) { $('calcLen').value = Math.round(L); pace('len'); }
+    else $('calcOut').textContent = 'no line length in /api/status - type it in';
+  } catch { $('calcOut').textContent = 'panel not reachable'; }
 }
 
 async function padgui(what) {
@@ -2048,6 +2113,16 @@ function field(path, value) {
 }
 
 function onField(path, value) {
+  // The par ladder is edited as "160, 175, 190" and stored as a sorted array
+  // of numbers - a bare string would be written straight into the config and
+  // the trainer would find no rungs at all.
+  if (path === 'reward.par_ladder') {
+    const rungs = String(value).split(',').map(v => Number(v.trim()))
+      .filter(v => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+    setPath(CONFIG, path, rungs);
+    markDirty(); renderFields();
+    return;
+  }
   // Fields with a display scale are edited in one unit and stored in another.
   const scale = (FIELD[path] || [])[3];
   if ((path === 'action.gas_threshold' || path === 'action.brake_threshold')

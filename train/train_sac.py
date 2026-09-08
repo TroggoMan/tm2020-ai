@@ -35,6 +35,7 @@ from train.learner import (DecoupledLearner, auto_batch, capacity_report,
 from train.regression import RegressionGuard
 from train.rotate import MapRotator, resolve_maps
 from train.nn_probe import NNProbe
+from train.par_ladder import ParLadder
 from train.why import WhyLog
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -152,6 +153,42 @@ def write_meta(path: str, env, args, grad: int) -> None:
     except OSError:
         pass
     return data
+
+
+def save_buffer_atomic(model, path: str) -> None:
+    """Write the replay buffer so an interrupted save cannot destroy the good one.
+
+    `save_replay_buffer` writes straight to the destination, and it is called
+    on EVERY checkpoint - so a ~5GB write that stops part way leaves a
+    truncated pickle where the previous good buffer used to be. There is no
+    second copy: the last one was overwritten by this very call. That is
+    exactly how models/plastic_explore_buffer.pkl came back at 2,147,482,282
+    bytes (2 GiB minus 1366, against the ~4.9 GB it should be), which then
+    raised UnpicklingError at startup and - with systemd Restart=on-failure -
+    crash-looped the trainer while four cars sat parked.
+
+    So: write to a temp path, fsync it, then os.replace() onto the real name.
+    Rename within a filesystem is atomic, so the destination is either the old
+    complete buffer or the new complete buffer and never a half of either. The
+    previous generation is kept as `.prev` - one extra copy is ~5GB against a
+    buffer that costs hours of real driving to refill.
+
+    Costs 2x the space transiently. Cheap next to losing 4M transitions.
+    """
+    dest = path + "_buffer.pkl"
+    tmp = path + "_buffer.writing"
+    model.save_replay_buffer(tmp)          # SB3 appends .pkl
+    tmp_pkl = tmp + ".pkl"
+    # Force it to disk before the rename, so a crash right after cannot leave
+    # the new name pointing at data still sitting in the page cache.
+    with open(tmp_pkl, "rb") as fh:
+        os.fsync(fh.fileno())
+    if os.path.exists(dest):
+        try:
+            os.replace(dest, path + "_buffer.prev.pkl")
+        except OSError:
+            pass
+    os.replace(tmp_pkl, dest)
 
 
 def check_meta(path: str, args) -> None:
@@ -515,7 +552,7 @@ class EpisodeLog(BaseCallback):
             self.last_save = now
             with paused(self.model):
                 self.model.save(self.path)
-                self.model.save_replay_buffer(self.path + "_buffer")
+                save_buffer_atomic(self.model, self.path)
             self._promote()
             # How hard the learner is actually working, every checkpoint. A
             # dead learner thread otherwise looks exactly like a healthy run:
@@ -1061,7 +1098,7 @@ def main():
         model.save(path)
         write_meta(path, env, args, grad)
         try:
-            model.save_replay_buffer(path + "_buffer")
+            save_buffer_atomic(model, path)
         except Exception as ex:
             print("could not save replay buffer:", ex, flush=True)
         # env.close() on a SubprocVecEnv waits on four worker pipes, and a
@@ -1136,6 +1173,17 @@ def main():
         callbacks.append(MapRotator(rotation, args.map_every,
                                     args.map_finishes, args.map_patience))
 
+    # par_speed ladder: raise the break-even speed as each rung is earned.
+    # Config-driven so it follows the map and can be edited from the panel
+    # while a run is going.
+    _rungs = _tuning().get("reward", "par_ladder", []) or []
+    if _rungs:
+        _win = int(_tuning().get("reward", "par_ladder_window", 50) or 50)
+        callbacks.append(ParLadder(_rungs, _win))
+        print(f"par ladder: {', '.join(str(int(r)) for r in _rungs)} km/h, "
+              f"advancing on the median of the last {_win} finishes",
+              flush=True)
+
     if args.regress_window:
         callbacks.append(RegressionGuard(
             window=args.regress_window, drop=args.regress_drop,
@@ -1181,7 +1229,7 @@ def main():
         write_meta(path, env, args, grad)
         try:
             with paused(model):
-                model.save_replay_buffer(path + "_buffer")
+                save_buffer_atomic(model, path)
         except Exception as ex:
             print("could not save replay buffer:", ex, flush=True)
         # Grab the map uid before the envs go away - the handover needs it to

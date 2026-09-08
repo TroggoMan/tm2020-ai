@@ -230,6 +230,26 @@ DEFAULTS: dict = {
         # 2:1 you want at a target speed, set par_speed to half of it
         # (m/s - 30 here is ~108 km/h, so 60 km/h is break-even).
         "par_speed": 0.0,
+        # A LADDER for par_speed, in km/h, ascending. Empty = manual.
+        #
+        # par_speed is the dial that decides how much lap time matters, and the
+        # right value moves as the car gets faster: set at the eventual target
+        # every lap reads deeply negative and the progress term's dynamic range
+        # is wasted; set at today's pace it goes slack the moment the car
+        # improves. So it wants raising in steps, as each is earned.
+        #
+        # Each rung's own implied lap time is the test - a par of P km/h over a
+        # line of L metres is asking for L / (P/3.6) seconds - so when the
+        # MEDIAN of the last par_ladder_window finishes reaches that, the car
+        # has by definition earned the rung and the next one is written in.
+        # Median so one recovery lap cannot hold it back and one lucky lap
+        # cannot advance it.
+        #
+        # Advancing rewrites this file, so the buffer then holds transitions
+        # scored under two different pars. Expect a step down while they age
+        # out; that is the price of any reward change.
+        "par_ladder": [],
+        "par_ladder_window": 50,
         # Charge an episode that ENDS EARLY IN FAILURE for the time it did not
         # use. Without this, a per-step time cost makes crashing profitable:
         # dying at step 100 of 1800 saves 1700 steps of charge, which is worth

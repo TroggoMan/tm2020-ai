@@ -2711,8 +2711,31 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    """Serve the panel.
+
+        web/server.py [port] [bind]
+
+    Bind defaults to 127.0.0.1 - LOCALHOST ONLY, deliberately. This panel can
+    start and stop training, rewrite the tuning config, drive the pads and
+    restore checkpoints, and it has NO AUTHENTICATION of any kind. Anything
+    that can reach the port owns the run.
+
+    So reaching it from another machine is a tunnel by default:
+
+        ssh -L 8080:127.0.0.1:8080 <this-box>
+
+    Pass a bind address to override - "0.0.0.0" for every interface, or a
+    single address to pin it to one. Only do that on a network you trust, or
+    behind a VPN, and know that "behind WireGuard" also means "on the LAN"
+    when the box has one NIC.
+    """
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    host = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
+    if host not in ("127.0.0.1", "localhost"):
+        print(f"  !! binding {host}:{port} - this panel has NO AUTH and can "
+              f"start/stop training, edit the reward and drive the car. "
+              f"Anything that can reach this port owns the run.", flush=True)
+    srv = ThreadingHTTPServer((host, port), Handler)
     print(f"control panel on http://127.0.0.1:{port}", flush=True)
     try:
         srv.serve_forever()
