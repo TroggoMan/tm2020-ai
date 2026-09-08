@@ -60,14 +60,31 @@ def maps_with_splits() -> list[str]:
 
 
 def sections(rows: list[dict]) -> list[list[int]]:
-    """Section durations per episode: cp0 from the start, then each gap."""
+    """Section durations per episode: cp0 from the start, each gap, then the
+    RUN-IN from the last checkpoint to the finish.
+
+    That last leg used to be missing, and it was usually the biggest one.
+    `splits` holds checkpoint times only, so a track with two checkpoints
+    reported two sections and stopped - on the plastic map that meant 7.03s of
+    a 17.36s lap was measured and the remaining 414m of 643m was invisible.
+    The tool then pointed at the largest gap it could see and recommended
+    aiming a hint at a section worth 0.75s, while two thirds of the track went
+    unexamined.
+
+    The finish leg needs no new data: a finished episode records `race_time`,
+    so the run-in is simply race_time - last_split. Only finished episodes have
+    a meaningful total, so only they contribute to it - which is correct
+    anyway, since an unfinished run has no run-in.
+    """
     width = max((len(r.get("splits") or []) for r in rows), default=0)
-    out: list[list[int]] = [[] for _ in range(width)]
+    out: list[list[int]] = [[] for _ in range(width + 1)]
     for r in rows:
         sp = r.get("splits") or []
         prev = 0
+        ok = True
         for i, t in enumerate(sp):
             if t is None:
+                ok = False
                 break
             d = int(t) - prev
             prev = int(t)
@@ -76,7 +93,28 @@ def sections(rows: list[dict]) -> list[list[int]]:
             # make that section's "best" an impossible number.
             if d >= 0:
                 out[i].append(d)
+            else:
+                ok = False
+        # The run-in, from the last checkpoint to the line.
+        rt = r.get("race_time")
+        if ok and r.get("finished") and rt is not None and len(sp) == width:
+            d = int(rt) - prev
+            if d >= 0:
+                out[width].append(d)
+    # Drop the run-in column entirely if nothing ever finished.
+    if not out[-1]:
+        out.pop()
     return out
+
+
+def _label(i: int, n: int) -> str:
+    """Name a section. The last one is the run-in to the line, not a gap
+    between checkpoints - calling it cpN->cpN+1 invented a checkpoint."""
+    if i == 0:
+        return "start->cp0"
+    if i == n - 1:
+        return f"cp{i - 1}->finish"
+    return f"cp{i - 1}->cp{i}"
 
 
 def fmt(ms: float) -> str:
@@ -115,7 +153,7 @@ def main() -> int:
     best_sum = 0.0
     complete = True
     for i, vals in enumerate(secs):
-        label = f"start->cp{i}" if i == 0 else f"cp{i - 1}->cp{i}"
+        label = _label(i, len(secs))
         if not vals:
             print(f"{label:>10}  {'-':>9}  {'-':>9}  {'-':>9}  0/{total}")
             complete = False
@@ -146,7 +184,7 @@ def main() -> int:
                 key=lambda i: (sorted(secs[i])[len(secs[i]) // 2]
                                - sorted(secs[i])[0]) if secs[i] else -1)
     if secs[worst]:
-        label = f"start->cp{worst}" if worst == 0 else f"cp{worst - 1}->cp{worst}"
+        label = _label(worst, len(secs))
         print(f"\nbiggest spread is {label} - that is the section to aim a "
               f"hint at (cp_from/cp_to in the tuning config).")
     return 0

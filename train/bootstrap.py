@@ -24,6 +24,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback
 
 from env.hints import parse as parse_hints
+from train.ghost_driver import GhostDriver, load as load_ghost
 from train.scripted import drive_batch
 
 
@@ -42,9 +43,28 @@ class BootstrapSAC(SAC):
     def __init__(self, *args, bootstrap: str = "pursuit",
                  bootstrap_random: float = 0.25,
                  bootstrap_jitter: float = 0.15,
-                 hints=None, control_hz: float = 40.0, **kwargs):
+                 hints=None, control_hz: float = 40.0,
+                 ghost_file: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.bootstrap = bootstrap
+        # "ghost": replay a recorded lap's inputs during the warm-up, so the
+        # buffer fills with a good driver's transitions scored by the env's own
+        # reward. See train/ghost_driver.py for why this beats injecting rows
+        # into the buffer directly.
+        self.ghost = None
+        if ghost_file:
+            try:
+                acts = load_ghost(ghost_file)
+                if len(acts):
+                    self.ghost = GhostDriver(acts)
+                    print(f"ghost warm-up: {len(acts)} recorded inputs from "
+                          f"{ghost_file}", flush=True)
+                else:
+                    print(f"ghost file {ghost_file} had no usable inputs - "
+                          f"falling back to '{bootstrap}'", flush=True)
+            except Exception as ex:                            # noqa: BLE001
+                print(f"could not load ghost {ghost_file}: {ex} - "
+                      f"falling back to '{bootstrap}'", flush=True)
         self.bootstrap_random = float(bootstrap_random)
         self.bootstrap_jitter = float(bootstrap_jitter)
         # Hints are performed during the warm-up so the buffer contains real
@@ -69,9 +89,16 @@ class BootstrapSAC(SAC):
     def _sample_action(self, learning_starts, action_noise=None, n_envs=1):
         warming = self.num_timesteps < learning_starts and not (
             self.use_sde and self.use_sde_at_warmup)
-        if not (warming and self.bootstrap != "off"
+        if not (warming and (self.bootstrap != "off" or self.ghost is not None)
                 and self._last_obs is not None):
             return super()._sample_action(learning_starts, action_noise, n_envs)
+
+        if self.ghost is not None:
+            unscaled = self.ghost.batch(n_envs).astype(np.float64)
+            if isinstance(self.action_space, spaces.Box):
+                scaled = self.policy.scale_action(unscaled)
+                return self.policy.unscale_action(scaled), scaled
+            return unscaled, unscaled
 
         try:
             unscaled = drive_batch(self._last_obs, self.bootstrap,

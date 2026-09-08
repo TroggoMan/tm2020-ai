@@ -519,6 +519,18 @@ class EpisodeLog(BaseCallback):
                     self.best = rt
                     with paused(self.model):
                         self.model.save(self.path + "_best")
+                    # A TICK script for the lap, so it can be replayed and
+                    # brute-forced outside this project. Written here because
+                    # this is where "new best" is decided - the env only sees
+                    # its own seat.
+                    ti = info.get("tick_inputs")
+                    if ti:
+                        from env.tick_export import write_best
+                        p_ = write_best(ROOT, info.get("map_uid") or "unknown",
+                                        ti, rt, episode=self.ep)
+                        if p_:
+                            print(f"  tick script -> {os.path.relpath(p_, ROOT)}",
+                                  flush=True)
                     self._promote()
                     print(f"  new best {rt/1000:.3f}s -> {self.path}_best.zip",
                           flush=True)
@@ -717,6 +729,18 @@ def main():
                          "trained enough to act: 'pursuit' drives toward the "
                          "line at full throttle, 'straight' just accelerates, "
                          "'off' is SB3's uniform random flailing")
+    ap.add_argument("--ghost-file", default="", metavar="DEMO.jsonl",
+                    help="replay a recorded ghost's inputs during the warm-up, "
+                         "instead of the scripted driver. Written by "
+                         "tools/record_line.py --demo. The car physically "
+                         "drives the recording, so the env produces the "
+                         "observation AND the reward through its own pipeline "
+                         "- unlike injecting rows into the buffer, which would "
+                         "need the reward synthesised offline and would teach "
+                         "the critic numbers nothing else in the buffer agrees "
+                         "with. Open loop: it only reproduces the lap while the "
+                         "car is where the ghost was, so it is a warm-up "
+                         "source, not a driver.")
     ap.add_argument("--bootstrap-random", type=float, default=0.25,
                     help="fraction of warm-up steps left uniform random, so "
                          "the buffer still contains alternatives to compare "
@@ -1032,6 +1056,7 @@ def main():
             # wall. See train/bootstrap.py.
             bootstrap=args.bootstrap,
             bootstrap_random=args.bootstrap_random,
+            ghost_file=args.ghost_file or None,
             # Hints the warm-up should perform, e.g. a brake tap in the
             # 400-600km/h window to put speed slides in the buffer at all.
             # Read from the same tuning config the reward reads, so the

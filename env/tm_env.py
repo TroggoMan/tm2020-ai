@@ -528,6 +528,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.gear = 0
         self.gear_held = 0
         self.steps = 0
+        self._tick_inputs = []
+        self._sent = None
         self.slow_for = 0
         self.moved = False
         self.never_moved = False
@@ -2427,6 +2429,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
         self.gear_held = 0
         self._next_step_at = None
         self.steps = 0
+        self._tick_inputs = []
+        self._sent = None
         self.slow_for = 0
         self.moved = False
         self.never_moved = False
@@ -2745,6 +2749,8 @@ class TrackmaniaEnv(gym.Env if gym else object):
             steer = max(self.prev_steer - max_d,
                         min(self.prev_steer + max_d, steer))
         self.pad.act(steer, gas, brake)
+        self._sent = (float(steer), 1.0 if gas > 0.5 else 0.0,
+                      1.0 if brake > 0.5 else 0.0)
 
         # Hold the control period against an ABSOLUTE clock, not against the
         # time this call started.
@@ -3214,6 +3220,12 @@ class TrackmaniaEnv(gym.Env if gym else object):
         finished = bool(rec.get("finished"))
 
         race_time = rec.get("race_time")
+        # TICK export: what we SENT this step, stamped with the game's own race
+        # clock so the script lines up with a real run. Recorded here rather
+        # than at pad.act() because the clock for this step is not read until
+        # now. Capped so a wedged episode cannot grow it without bound.
+        if self._sent is not None and len(self._tick_inputs) < 20000:
+            self._tick_inputs.append((float(race_time or 0.0),) + self._sent)
 
         # --- sector curriculum ------------------------------------------
         #
@@ -3381,7 +3393,13 @@ class TrackmaniaEnv(gym.Env if gym else object):
         if self.steps >= self.max_steps:
             truncated = True
 
+        # Hand the episode's inputs up on a FINISH only. The trainer knows
+        # whether this lap is a new best (the env sees one seat, not the fleet),
+        # so the decision to keep it lives there - see EpisodeLog.
+        _tick = (list(self._tick_inputs)
+                 if (finished and self._tick_inputs) else None)
         info = {"race_time": race_time, "offset": offset, "speed": speed,
+                "tick_inputs": _tick, "map_uid": self.map_uid,
                 "cp": cp, "cp_total": len(self.gates) if self.gates else 0,
                 "distance": s, "start_distance": self.start_s,
                 "max_distance": self.max_s, "instance": self.instance,
