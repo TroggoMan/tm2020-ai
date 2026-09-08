@@ -166,4 +166,19 @@ class HintRelay(BaseCallback):
         infos = self.locals.get("infos") or []
         self.model._hint_actions = [
             (i or {}).get("hint_action") for i in infos]
+        # Rewind that seat's ghost when its episode ends.
+        #
+        # GhostDriver's cursor only advances, so without this a 1204-input
+        # recording is spent after one episode and every remaining warm-up step
+        # is neutral - a 200k warm-up would be 1204 useful transitions and
+        # 198,796 of a parked car. Each seat rewinds on its OWN done, because
+        # seats finish at different moments and a shared reset would hand one
+        # of them the start of the lap while it is halfway round.
+        ghost = getattr(self.model, "ghost", None)
+        if ghost is not None:
+            dones = self.locals.get("dones")
+            if dones is not None:
+                for i, d in enumerate(dones):
+                    if d:
+                        ghost.reset_env(i)
         return True
