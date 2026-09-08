@@ -277,13 +277,77 @@ def route_model_line(root: str, map_uid: str, min_coverage: float = 0.75,
     return out
 
 
+def wr_ghost_line(root: str, map_uid: str) -> str | None:
+    """A world-record line imported from a .Ghost.Gbx, for this map.
+
+    WHY THIS OUTRANKS THE OTHER SOURCES
+
+    Every other line the handover can build describes what the EXPLORER did:
+    route_model_line is the roadtrace the explorer trained against, and
+    best_trace smooths the explorer's own fastest run. Handing over to either
+    caps the racer at the explorer's ability - it optimises against a line
+    drawn by a car that has never finished quickly.
+
+    A ghost line is a human world record's actual racing line, so it is a
+    target rather than a mirror. It also covers the whole lap by construction,
+    which a driven trace only does once the explorer can complete one: the
+    line this replaced covered 33% of the lap and was flat for its first 356 m,
+    on a map whose real profile has a 13 m climb and a 20 m drop.
+
+    Matched on the `map` stamped in at import - a ghost line is named after the
+    ghost, not the map - and the fastest lap wins when several are present.
+    """
+    best = None
+    d = os.path.join(root, "lines")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or doc.get("map") != map_uid:
+            continue
+        if not doc.get("wr_ghost") or len(doc.get("points") or ()) < 8:
+            continue
+        lap = doc.get("lap_ms") or 1 << 30
+        if best is None or lap < best[0]:
+            best = (lap, path, doc)
+    if best is None:
+        return None
+    lap, path, doc = best
+    print(f"handover: world-record line -> {path}", flush=True)
+    print(f"  {len(doc['points'])} pts from {doc['wr_ghost']} "
+          f"({lap / 1000.0:.3f}s) - a human WR's line, not the explorer's own, "
+          f"so the racer optimises against a target instead of a mirror",
+          flush=True)
+    return path
+
+
 def build_race_line(root: str, map_uid: str, smooth_m: float = 30.0,
-                    out: str | None = None) -> str | None:
+                    out: str | None = None,
+                    prefer: str | None = None) -> str | None:
     """The race stage's reference line.
 
-    Prefers the route model (see route_model_line); only smooths a driven trace
-    when there is no usable roadtrace for the map.
+    Precedence: an imported world-record ghost line, then the route model (see
+    route_model_line), and only then a smoothed driven trace. `prefer` short-
+    circuits all of it for a hand-picked line.
     """
+    if prefer:
+        path = prefer if os.path.isabs(prefer) else os.path.join(root, prefer)
+        if os.path.exists(path):
+            print(f"handover: using the given line -> {path}", flush=True)
+            return path
+        print(f"handover: {prefer} does not exist - falling back", flush=True)
+    from_wr = wr_ghost_line(root, map_uid)
+    if from_wr:
+        return from_wr
     from_route = route_model_line(root, map_uid, out=out)
     if from_route:
         return from_route

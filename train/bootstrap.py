@@ -54,11 +54,15 @@ class BootstrapSAC(SAC):
         self.ghost = None
         if ghost_file:
             try:
-                acts = load_ghost(ghost_file)
+                # Resampled onto the control clock: the cursor advances one
+                # row per step, so a 20 Hz ghost against a 40 Hz control rate
+                # would otherwise replay the lap at double speed.
+                acts = load_ghost(ghost_file, hz=control_hz)
                 if len(acts):
                     self.ghost = GhostDriver(acts)
-                    print(f"ghost warm-up: {len(acts)} recorded inputs from "
-                          f"{ghost_file}", flush=True)
+                    print(f"ghost warm-up: {len(acts)} inputs from "
+                          f"{ghost_file} at {control_hz:g}Hz "
+                          f"({len(acts)/control_hz:.1f}s)", flush=True)
                 else:
                     print(f"ghost file {ghost_file} had no usable inputs - "
                           f"falling back to '{bootstrap}'", flush=True)
@@ -93,12 +97,30 @@ class BootstrapSAC(SAC):
                 and self._last_obs is not None):
             return super()._sample_action(learning_starts, action_noise, n_envs)
 
+        # The ghost drives whatever seats it still has samples for; the
+        # scripted driver picks up the rest. These used to be exclusive - a
+        # ghost REPLACED pursuit entirely - which meant a 28.9s world record
+        # left every seat parked in neutral for the remainder of a long
+        # episode, and made "use the WR" and "use pursuit" a choice you had to
+        # get right up front. Seeding with the record and continuing under
+        # pursuit is strictly better than either alone.
+        ghost_unscaled = ghost_live = None
         if self.ghost is not None:
-            unscaled = self.ghost.batch(n_envs).astype(np.float64)
+            ghost_unscaled, ghost_live = self.ghost.batch(n_envs)
+            ghost_unscaled = ghost_unscaled.astype(np.float64)
+            if not ghost_live.any():
+                if self.bootstrap == "off":
+                    if isinstance(self.action_space, spaces.Box):
+                        scaled = self.policy.scale_action(ghost_unscaled)
+                        return self.policy.unscale_action(scaled), scaled
+                    return ghost_unscaled, ghost_unscaled
+                ghost_unscaled = ghost_live = None
+
+        if ghost_live is not None and self.bootstrap == "off":
             if isinstance(self.action_space, spaces.Box):
-                scaled = self.policy.scale_action(unscaled)
+                scaled = self.policy.scale_action(ghost_unscaled)
                 return self.policy.unscale_action(scaled), scaled
-            return unscaled, unscaled
+            return ghost_unscaled, ghost_unscaled
 
         try:
             unscaled = drive_batch(self._last_obs, self.bootstrap,
@@ -115,6 +137,13 @@ class BootstrapSAC(SAC):
         if unscaled.shape[0] != n_envs:
             unscaled = np.repeat(unscaled[:1], n_envs, axis=0)
 
+        # Seats the ghost is still driving take its inputs verbatim. Done
+        # BEFORE the hint overlay and the random/jitter pass below, so a ghost
+        # lap goes into the buffer as the world record actually drove it -
+        # jittering a known-good reference would only blur it.
+        if ghost_live is not None and ghost_live.any():
+            unscaled[ghost_live] = ghost_unscaled[ghost_live]
+
         # Overlay whatever the environments asked for, axis by axis. A hint
         # that only sets `gas` leaves the driver's steering alone, which is
         # what makes "hold flat through sector 2" a one-line hint rather than
@@ -129,6 +158,8 @@ class BootstrapSAC(SAC):
 
         rng = np.random.random(n_envs)
         for i in range(n_envs):
+            if ghost_live is not None and ghost_live[i]:
+                continue
             if rng[i] < self.bootstrap_random:
                 unscaled[i] = self.action_space.sample()
             elif self.bootstrap_jitter:

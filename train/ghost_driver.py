@@ -39,7 +39,53 @@ import json
 import numpy as np
 
 
-def load(path: str) -> np.ndarray:
+def _resample(rows: list, hz: float | None) -> list:
+    """Put the samples on the control clock, holding each input until the next.
+
+    THE CURSOR IS TIME, NOT INDEX. GhostDriver advances one sample per control
+    step, so a file whose rows are not spaced at exactly 1/control_hz replays at
+    the wrong speed. That is not a subtle degradation: a ghost read out of a
+    .Gbx is 20 Hz against a 40 Hz control rate, so replaying it row-per-step
+    runs the lap at DOUBLE speed - every input released half a lap early, the
+    car nowhere near the line, and a buffer full of transitions that look like
+    a world record's inputs and are nothing of the sort.
+
+    Recorder demos have the same problem from the other direction: they append
+    a row every 0.5 m of movement, so their rows are spaced by DISTANCE, and
+    a slow corner is sampled densely in space but sparsely in time.
+
+    Zero-order hold is the right interpolation here rather than something
+    smoother, because these are held control positions - the pedal was down
+    for that whole interval, and averaging across a release would invent an
+    input the driver never made.
+
+    Files with no usable race_time are returned untouched: guessing a clock is
+    worse than leaving the caller's assumption visible.
+    """
+    if not hz or hz <= 0 or len(rows) < 2:
+        return rows
+    times = []
+    for r in rows:
+        t = r.get("race_time") if isinstance(r, dict) else None
+        times.append(None if t is None else float(t))
+    if any(t is None for t in times):
+        return rows
+    t0 = times[0]
+    span = (times[-1] - t0) / 1000.0
+    if span <= 0:
+        return rows
+    step = 1000.0 / hz
+    out, j = [], 0
+    n = int(span * hz)
+    for k in range(n + 1):
+        target = t0 + k * step
+        while j + 1 < len(times) and times[j + 1] <= target:
+            j += 1
+        out.append(rows[j])
+    return out
+
+
+def load(path: str, hz: float | None = None) -> np.ndarray:
     """Read a --demo file into an (N, 3) array of [steer, gas, brake] actions.
 
     The file is telemetry, so the inputs are the ones the ghost's car RECEIVED.
@@ -52,6 +98,7 @@ def load(path: str) -> np.ndarray:
         rows = json.load(f)
     if isinstance(rows, dict):
         rows = rows.get("samples") or rows.get("rows") or []
+    rows = _resample(rows, hz)
     out = []
     for r in rows:
         if not isinstance(r, dict):
@@ -88,7 +135,17 @@ class GhostDriver:
         if 0 <= i < len(self.idx):
             self.idx[i] = 0
 
-    def batch(self, n_envs: int) -> np.ndarray:
+    def batch(self, n_envs: int) -> tuple[np.ndarray, np.ndarray]:
+        """Returns (actions, live) - `live[i]` is False where the ghost is spent.
+
+        The caller needs to know WHICH seats the ghost is still driving, not
+        just what it would like them to do. A spent ghost used to hand back
+        neutral, which parks the car until the stuck timer fires and fills the
+        buffer with a seat doing nothing for the rest of a long episode. With
+        the flag, the caller can drive those seats with the scripted pursuit
+        driver instead, so the ghost seeds a real world-record lap and pursuit
+        takes over from where it ran out.
+        """
         while len(self.idx) < n_envs:
             self.idx.append(0)
         out = np.zeros((n_envs, 3), dtype=np.float32)
@@ -96,9 +153,11 @@ class GhostDriver:
         # env decodes them OFF rather than leaving the throttle latched.
         out[:, 1] = -1.0
         out[:, 2] = -1.0
+        live = np.zeros(n_envs, dtype=bool)
         for i in range(n_envs):
             k = self.idx[i]
             if k < len(self.actions):
                 out[i] = self.actions[k]
                 self.idx[i] = k + 1
-        return out
+                live[i] = True
+        return out, live

@@ -627,8 +627,14 @@ def main():
                          "in place. The replay buffer is kept.")
     ap.add_argument("--handover", type=int, default=0, metavar="N",
                     help="explore only: stop after N finishes with no further "
-                         "improvement, build the race line from the best run, "
-                         "and hand over. 0 (default) runs explore forever.")
+                         "improvement, build the race line (see "
+                         "--handover-line for the precedence), and hand over. "
+                         "0 (default) runs explore forever.")
+    ap.add_argument("--handover-line", default="", metavar="PATH",
+                    help="hand over to THIS reference line instead of letting "
+                         "the handover pick one. Without it the precedence is "
+                         "imported world-record ghost line > route model > "
+                         "smoothed best trace.")
     ap.add_argument("--handover-patience", type=int, default=25,
                     help="finishes without a new best before handing over")
     ap.add_argument("--then-race", action="store_true",
@@ -1311,9 +1317,27 @@ def do_handover(args, watch) -> int:
         print("handover: no map uid known - cannot find the traces", flush=True)
         return 1
 
-    line_path = build_race_line(ROOT, uid)
+    line_path = build_race_line(ROOT, uid, prefer=args.handover_line)
     if not line_path:
         return 1
+
+    # If the line came from a world-record ghost, the same ghost's INPUTS are
+    # sitting beside it under demos/. Hand those over too: the line only tells
+    # the racer where to go, while the demo puts the record's own lap in the
+    # buffer for it to learn from. The ghost seeds each episode and pursuit
+    # continues once it runs out (see train/bootstrap.py).
+    ghost_demo = ""
+    cand = os.path.join(ROOT, "demos",
+                        os.path.basename(line_path))
+    try:
+        with open(line_path) as f:
+            is_wr = bool(json.load(f).get("wr_ghost"))
+    except (OSError, ValueError):
+        is_wr = False
+    if is_wr and os.path.exists(cand):
+        ghost_demo = cand
+        print(f"handover: ghost demo -> {os.path.relpath(cand, ROOT)}",
+              flush=True)
 
     # Relax line-following for the race stage, in that map's own config, so it
     # survives a restart and shows up in the panel where you can see it.
@@ -1332,8 +1356,9 @@ def do_handover(args, watch) -> int:
           f"({RACE_PROFILE})", flush=True)
 
     if not args.then_race:
+        gf = f" --ghost-file {ghost_demo}" if ghost_demo else ""
         print("\nhandover complete. Start the racer with:\n"
-              f"  train/train_sac.py --stage race --line {line_path}\n"
+              f"  train/train_sac.py --stage race --line {line_path}{gf}\n"
               "(--then-race would have done that automatically)", flush=True)
         return 0
 
@@ -1366,6 +1391,8 @@ def do_handover(args, watch) -> int:
             "--instances", str(race_instances),
             "--init-from", explore_model,
             "--promote-to", driver]
+    if ghost_demo:
+        argv += ["--ghost-file", ghost_demo]
     # Carry the learner arrangement across. Without this the racer silently
     # re-decides it: an explore run deliberately started with --no-decouple
     # would come back decoupled, and a tuned --utd would drop back to the
