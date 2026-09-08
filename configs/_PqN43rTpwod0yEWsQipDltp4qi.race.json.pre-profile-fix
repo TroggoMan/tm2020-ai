@@ -46,8 +46,8 @@
     "cp_bonus": 100,
     "w_cp_approach": 0.05,
     "off_line_penalty": 20,
-    "stuck_penalty": 10,
-    "w_weave": 0.1,
+    "stuck_penalty": 25,
+    "w_weave": 0.55,
     "w_reversal": 0,
     "w_turbo_use": 0,
     "w_air": 0,
@@ -99,7 +99,23 @@
     "warn_below": 0.95
   },
   "marks": {},
-  "hints": [],
+  "hints": [
+    {
+      "name": "hint 1",
+      "cp_from": -1,
+      "cp_to": -1,
+      "mark_from": "jump_runup",
+      "mark_to": "jump_landing",
+      "speed_from_kmh": 180,
+      "speed_to_kmh": 250,
+      "hold_ms": 120,
+      "gap_ms": 700,
+      "w": 0.05,
+      "gas": 1,
+      "brake": null,
+      "steer": null
+    }
+  ],
   "action": {
     "binary_gas": true,
     "binary_brake": true,
@@ -119,11 +135,5 @@
     "accel": true,
     "speedslide": false,
     "iceslide": false
-  },
-  "markers": [
-    {
-      "s": 1804.8,
-      "bonus": 200.0
-    }
-  ]
+  }
 }

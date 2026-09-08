@@ -505,6 +505,11 @@ table.splits tr.worst td:first-child::after{content:" ← biggest gap";
       <input id="rtBonus" type="number" value="200" step="50" style="width:70px"
              title="reward for reaching the marker">
       <button onclick="RE.trails={};RE.draw()" title="wipe the car traces">Clear traces</button>
+      <label title="Show a line from lines/ instead of the roadtrace route model. Ghost and GPS imports have no route model, so this is the only way to see one.">show line</label>
+      <select id="rtLineSel" style="max-width:230px"
+              onchange="RE.lineFile=this.value||null;RE.load();">
+        <option value="">— route model (roadtrace) —</option>
+      </select>
       <label class="toggle" title="Mark the next patch as a JUMP gap: no off-line/airtime penalty across it."><input type="checkbox" id="rtJump"
         onchange="RE.kind=this.checked?'jump':'road'"> draw as jump</label>
       <span style="flex:1"></span>
@@ -1088,6 +1093,14 @@ async function tick() {
   drawPath(s);
 
   LINE_INFO = s.line_info || [];
+  const rls = $('rtLineSel');
+  if (rls && rls.dataset.sig !== JSON.stringify(s.lines)) {
+    rls.dataset.sig = JSON.stringify(s.lines);
+    const cur = rls.value;
+    rls.innerHTML = '<option value="">— route model (roadtrace) —</option>'
+      + (s.lines || []).map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    rls.value = cur;
+  }
   const sel = $('lineSel');
   const sig = JSON.stringify(LINE_INFO);
   if (sel.dataset.sig !== sig) {
@@ -2748,7 +2761,13 @@ const RE = {
 
   async load(uid) {
     try {
-      const q = uid ? ('?map=' + encodeURIComponent(uid)) : '';
+      // RE.lineFile lets the editor show a specific line from lines/ - a ghost
+      // or GPS import has no route model behind it, so without this there was
+      // no way to look at one before training on it.
+      const parts = [];
+      if (uid) parts.push('map=' + encodeURIComponent(uid));
+      if (this.lineFile) parts.push('line=' + encodeURIComponent(this.lineFile));
+      const q = parts.length ? ('?' + parts.join('&')) : '';
       const r = await fetch('/api/route' + q);
       const j = await r.json();
       if (!j || j.ok === false) { this.hint(j && j.err || 'no route'); return; }

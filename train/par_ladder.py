@@ -74,6 +74,23 @@ class ParLadder(BaseCallback):
             self.cfg_path = self.training_env.get_attr("cfg")[0].path
         except Exception:                                      # noqa: BLE001
             return False
+        # Rungs come from the MAP's config, which is not knowable when the
+        # callback is built - the map uid is only settled once the envs exist,
+        # so a ladder set per-map was read from the default config and came
+        # back empty every time. Now they are picked up here, on the same
+        # resolve that finds the line length.
+        if not self.rungs and self.cfg_path:
+            try:
+                with open(self.cfg_path) as f:
+                    found = json.load(f).get("reward", {}).get("par_ladder") or []
+                self.rungs = [float(r) for r in found if float(r) > 0]
+                if self.rungs:
+                    print(f"par ladder: {', '.join(str(int(r)) for r in self.rungs)}"
+                          f" km/h, from {os.path.basename(self.cfg_path)}, "
+                          f"advancing on the median of the last {self.window} "
+                          f"finishes", flush=True)
+            except (OSError, ValueError, TypeError):
+                pass
         return bool(self.line_m and self.cfg_path)
 
     def _lap_for(self, par_kmh: float) -> float:

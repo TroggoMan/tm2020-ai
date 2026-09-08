@@ -883,7 +883,12 @@ def main():
         def _make():
             return TrackmaniaEnv(
                 line, control_hz=args.control_hz,
-                profile="explore" if args.stage == "explore" else "",
+                # The race stage now reads <map>.race.json, which is what the
+                # panel's "race" profile has always written to. It used to read
+                # the base <map>.json, so every edit made with the panel on the
+                # race profile went to a file nothing loaded and silently did
+                # nothing.
+                profile=args.stage if args.stage in ("explore", "race") else "",
                 # One config for every map, so a rotation cannot silently
                 # score track 2 differently from track 1.
                 shared_config=bool(args.shared_config),
@@ -1081,7 +1086,23 @@ def main():
             # policy needs none ("off"), but a policy that has collapsed into a
             # bad basin benefits from re-seeding the fresh buffer with good
             # driving, so pass --bootstrap pursuit to do that.
-            model.set_parameters(args.init_from, exact_match=False)
+            # A snapshot trained with ent_coef="auto" carries an
+            # ent_coef_optimizer. Under a FIXED --ent-coef that attribute is
+            # None, and SB3 loads state into it unconditionally:
+            #   AttributeError: 'NoneType' object has no attribute 'load_state_dict'
+            # Drop any parameter group whose target does not exist on this
+            # model, so switching a run off auto entropy can still inherit the
+            # weights - which is exactly when you most want to, since auto
+            # entropy is what collapsed the policy you are recovering from.
+            from stable_baselines3.common.save_util import load_from_zip_file
+            _, _params, _ = load_from_zip_file(args.init_from, device=model.device)
+            _kept = {k: v for k, v in _params.items()
+                     if getattr(model, k, None) is not None}
+            _dropped = sorted(set(_params) - set(_kept))
+            model.set_parameters(_kept, exact_match=False)
+            if _dropped:
+                print(f"  skipped {', '.join(_dropped)} - not present under "
+                      f"--ent-coef {args.ent_coef}", flush=True)
             model.bootstrap = args.bootstrap
             print(f"  warm-started from {args.init_from} "
                   f"(weights only, empty buffer, "
@@ -1223,10 +1244,13 @@ def main():
     # par_speed ladder: raise the break-even speed as each rung is earned.
     # Config-driven so it follows the map and can be edited from the panel
     # while a run is going.
+    # Always attach it. The rungs cannot be read here for a per-map ladder -
+    # the map uid is not known until the envs exist - so ParLadder resolves
+    # them itself on its first step, from the config the env actually loaded.
     _rungs = _tuning().get("reward", "par_ladder", []) or []
+    _win = int(_tuning().get("reward", "par_ladder_window", 50) or 50)
+    callbacks.append(ParLadder(_rungs, _win))
     if _rungs:
-        _win = int(_tuning().get("reward", "par_ladder_window", 50) or 50)
-        callbacks.append(ParLadder(_rungs, _win))
         print(f"par ladder: {', '.join(str(int(r)) for r in _rungs)} km/h, "
               f"advancing on the median of the last {_win} finishes",
               flush=True)

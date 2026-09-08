@@ -103,9 +103,11 @@ class BootstrapSAC(SAC):
         """
         if self.ghost is not None:
             for i, inf in enumerate(infos or ()):
-                rt = (inf or {}).get("race_time") if isinstance(inf, dict) else None
-                if rt is not None:
-                    self._ghost_clock[i] = rt
+                # Record it even when it is None: None means "clock not
+                # running", which sync() needs to see so it can hold the ghost
+                # at the start line instead of letting it run on.
+                self._ghost_clock[i] = (
+                    (inf or {}).get("race_time") if isinstance(inf, dict) else None)
         return super()._store_transition(replay_buffer, buffer_action, new_obs,
                                          reward, dones, infos)
 

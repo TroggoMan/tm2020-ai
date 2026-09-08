@@ -155,9 +155,16 @@ class GhostDriver:
         is 0 or absent, so the cursor sits on the first input and the record
         starts when the car is actually released.
         """
-        if self.hz <= 0 or not (0 <= i < len(self.idx)) or race_time_ms is None:
+        if self.hz <= 0 or not (0 <= i < len(self.idx)):
             return
-        k = int(round(float(race_time_ms) / 1000.0 * self.hz))
+        # A MISSING clock means the race has not started - the countdown, the
+        # spawn settle, a respawn. That is the case this exists for, so it must
+        # pin the cursor at the start, NOT skip the sync. Skipping let the
+        # cursor fall back to counting steps through the countdown, which spent
+        # about 1.5s of the lap before the car had moved and made every corner
+        # arrive that much early, consistently, at any control rate.
+        k = 0 if race_time_ms is None else int(
+            round(float(race_time_ms) / 1000.0 * self.hz))
         self.idx[i] = max(0, min(k, len(self.actions)))
 
     def batch(self, n_envs: int) -> tuple[np.ndarray, np.ndarray]:

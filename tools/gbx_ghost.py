@@ -48,6 +48,10 @@ import zlib
 from itertools import accumulate
 
 GHOST_CLASS = 0x03092000
+# A map can embed the author's guide ghost - the "GPS". It is the same
+# CPlugEntRecordData in a CGameCtnChallenge container, so the whole decode
+# path is reused; only this class check had to widen.
+MAP_CLASS = 0x03043000
 ENT_RECORD_DATA = 0x0911F000
 
 
@@ -94,8 +98,8 @@ def read_body(path: str) -> bytes:
     cls = 0
     if ver >= 3:
         cls = struct.unpack_from("<I", data, o)[0]; o += 4
-    if cls != GHOST_CLASS:
-        raise ValueError(f"not a ghost: class 0x{cls:08X}")
+    if cls not in (GHOST_CLASS, MAP_CLASS):
+        raise ValueError(f"not a ghost or map: class 0x{cls:08X}")
     if ver >= 6:
         uds = struct.unpack_from("<I", data, o)[0]; o += 4 + uds
     o += 4                                   # numNodes

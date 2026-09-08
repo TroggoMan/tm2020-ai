@@ -1854,6 +1854,32 @@ class TrackmaniaEnv(gym.Env if gym else object):
             except Exception as ex:                       # noqa: BLE001
                 print(f"  route model unavailable ({ex}) - "
                       f"keeping the provisional line", flush=True)
+
+        # A line supplied with --line has no route model behind it, so jump
+        # spans were never loaded and the jump reward could not fire at all -
+        # w_jump_speed sat live in the config with nothing to attach to. The
+        # spans are world XZ pairs, not indices into a particular line, so they
+        # project onto ANY line for this map. Fetch them even when the line is
+        # not being rebuilt.
+        if self.line is not None and not self._route_jumps and uid:
+            try:
+                from .routemodel import merged_line
+                _dump = None
+                if grid is not None:
+                    _dump = {"boxes": getattr(grid, "boxes", None),
+                             "names": getattr(grid, "names", None),
+                             "base_height": getattr(grid, "base_height", 8),
+                             "block_size": list(getattr(grid, "block",
+                                                        (32, 8, 32)))}
+                _rm = merged_line(ROOT, uid, gates=self.gates, dump=_dump)
+                if _rm and _rm.get("jumps"):
+                    self._route_jumps = _rm["jumps"]
+                    self._compute_jump_spans()
+                    print(f"  jump spans from the route model: "
+                          f"{len(self._jump_s)} on the supplied line",
+                          flush=True)
+            except Exception as ex:                       # noqa: BLE001
+                print(f"  jump spans unavailable ({ex})", flush=True)
         elif self.line is not None and self._track_hw is None:
             self._adopt_track_geometry(uid)
 

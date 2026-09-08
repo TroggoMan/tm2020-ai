@@ -1108,7 +1108,7 @@ def spliced_line_3d(uid: str):
     return pts, cum
 
 
-def route_payload(uid: str) -> dict:
+def route_payload(uid: str, line: str | None = None) -> dict:
     """Everything the panel's route editor needs. Pure stdlib: reads the line
     from the pre-built maps/<uid>.roadtrace.json / .learned.json caches (the
     trainer regenerates them), the occupancy backdrop from maps/<uid>.json, the
@@ -1132,11 +1132,25 @@ def route_payload(uid: str) -> dict:
         xz = {(a[i], a[i + 2]) for i in range(0, len(a) - 2, 3)}
         out["cells"] = [[x, z] for x, z in sorted(xz)][:6000]
 
-    base = _read(f"{uid}.roadtrace.json")
-    src = "roadtrace"
+    # An explicit line wins over the route model. A ghost or GPS line is just a
+    # point list in lines/, with no route model behind it, so the editor could
+    # not show one at all - which made it impossible to check a ghost's route
+    # against the track before training on it.
+    base, src = None, "roadtrace"
+    if line:
+        safe = os.path.basename(line)
+        try:
+            with open(os.path.join(ROOT, "lines", safe)) as f:
+                doc = json.load(f)
+            if doc.get("points"):
+                base, src = doc, f"line:{safe}"
+        except (OSError, json.JSONDecodeError):
+            pass
     if base is None:
-        base = _read(f"{uid}.learned.json")
-        src = "learned"
+        base = _read(f"{uid}.roadtrace.json")
+        if base is None:
+            base = _read(f"{uid}.learned.json")
+            src = "learned"
     if base and base.get("points"):
         pts = [[round(p[0], 1), round(p[2], 1)] for p in base["points"]]
         out["order"] = base.get("order", [])
@@ -2318,7 +2332,7 @@ class Handler(BaseHTTPRequestHandler):
                 LINK.ensure_landmarks()
             except Exception:                            # noqa: BLE001
                 pass
-            self._json(route_payload(uid))
+            self._json(route_payload(uid, (q.get("line") or [None])[0]))
             return
 
         if self.path.startswith("/api/replays"):
