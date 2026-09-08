@@ -44,3 +44,7 @@ nohup.out
 # data, not ours to redistribute - and the parsed line/demo are derived
 # artefacts that live in lines/ and demos/, which are already ignored.
 ghosts/
+
+# local one-shot repo maintenance
+.finish-repos.sh
+.scrub-tmt.py
