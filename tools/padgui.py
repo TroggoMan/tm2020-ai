@@ -17,6 +17,7 @@ Seat selector picks which pad (8765 / 8775 / 8785 / 8795). For splitscreen
 menu setup you only ever need seat 0 - player 1 drives every menu.
 """
 import re
+import json
 import os
 import re
 import shutil
@@ -61,6 +62,34 @@ def _xdo(args, disp=None):
         return f"xdotool err: {e.stderr.decode(errors='ignore')[:120] if e.stderr else e}"
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"xdotool err: {e}"
+
+def _game_geom(disp=None):
+    """Position and size of the game window, so the pointer can be aimed at a
+    FRACTION of it rather than nudged blindly."""
+    if not XDOTOOL:
+        return {"ok": False, "err": "xdotool not installed"}
+    if disp and not re.fullmatch(r":\d+(\.\d+)?", disp):
+        return {"ok": False, "err": "bad display"}
+    env = {"DISPLAY": disp or GAME_DISPLAY, "PATH": "/usr/bin:/bin"}
+    try:
+        wid = subprocess.run([XDOTOOL, "search", "--name", "Trackmania"],
+                             env=env, capture_output=True, text=True,
+                             timeout=3).stdout.split()
+        if not wid:
+            return {"ok": False, "err": "no Trackmania window"}
+        out = subprocess.run([XDOTOOL, "getwindowgeometry", "--shell", wid[0]],
+                             env=env, capture_output=True, text=True,
+                             timeout=3).stdout
+        d = {}
+        for line in out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                d[k.strip().lower()] = v.strip()
+        return {"ok": True, "x": int(d["x"]), "y": int(d["y"]),
+                "w": int(d["width"]), "h": int(d["height"]), "id": wid[0]}
+    except (subprocess.SubprocessError, OSError, KeyError, ValueError) as e:
+        return {"ok": False, "err": str(e)[:120]}
+
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <title>pad</title><meta name=viewport content="width=device-width,initial-scale=1">
@@ -151,14 +180,22 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
  <span style="color:#888;font-size:12px">Esc exits. Every key goes to the game, including F3.</span>
 </div>
 <div class=row style="gap:10px;flex-wrap:wrap">
- <div id=trackpad style="width:260px;height:150px;background:#191919;border:1px solid #333;
+ <div id=trackpad style="width:288px;height:162px;background:#191919;border:1px solid #333;
       border-radius:8px;display:flex;align-items:center;justify-content:center;
-      color:#666;font-size:12px;touch-action:none">drag = move mouse</div>
+      color:#666;font-size:12px;touch-action:none;position:relative">
+  <span id=tphint>touch = point at the game</span>
+  <div id=tpdot style="position:absolute;width:9px;height:9px;margin:-5px 0 0 -5px;
+       border-radius:50%;background:#4ea1ff;box-shadow:0 0 6px #4ea1ff;display:none"></div>
+ </div>
  <div style="display:flex;flex-direction:column;gap:6px">
   <button data-mb=1>left click</button>
   <button data-mb=3>right click</button>
+  <button id=tpcentre>centre pointer</button>
   <button data-key=F3 style="font-weight:700">F3 (Openplanet)</button>
+  <label style="font-size:12px;color:#888"><input type=checkbox id=tptap checked> tap = click</label>
+  <label style="font-size:12px;color:#888"><input type=checkbox id=tprel> relative drag</label>
  </div>
+ <div id=tpgeom style="color:#666;font-size:11px;align-self:flex-end"></div>
 </div>
 <div class=hint>
  keys: <kbd>← ↑ → ↓</kbd> nav &nbsp; <kbd>Enter</kbd> A &nbsp; <kbd>Backspace</kbd> B
@@ -293,18 +330,74 @@ addEventListener('keyup',e=>{
 addEventListener('blur',()=>{if(passthrough)ptSet(false);});
 
 // --- mouse -------------------------------------------------------------
+// The pad is an ABSOLUTE map of the game window, not a laptop touchpad.
+// Relative deltas were useless: the X pointer sits wherever it was last left
+// (measured at y=0, above a window that starts at y=30), so a drag moved a
+// cursor the game never saw. Pointing at a fraction of the pad always lands
+// inside the window.
 (function(){
-  const tp=$('#trackpad'); let last=null;
-  const move=(x,y)=>{
+  const tp=$('#trackpad'), dot=$('#tpdot'), hint=$('#tphint'), gEl=$('#tpgeom');
+  let geom=null, last=null, down=null, pending=null, inflight=false;
+
+  const loadGeom=()=>fetch('/geom?disp='+encodeURIComponent(disp()))
+    .then(r=>r.json()).then(g=>{
+      geom=g.ok?g:null;
+      if(geom){
+        gEl.textContent=geom.w+'x'+geom.h+' @ '+geom.x+','+geom.y;
+        // match the pad to the window's aspect so pointing is not skewed
+        tp.style.height=Math.round(288*geom.h/geom.w)+'px';
+        hint.textContent='touch = point at the game';
+      }else{ gEl.textContent=''; hint.textContent=g.err||'no game window'; }
+    }).catch(()=>{});
+  loadGeom(); setInterval(loadGeom,15000);
+
+  // one request in flight at a time; the newest position wins
+  const flush=()=>{
+    if(inflight||!pending)return;
+    const [fx,fy]=pending; pending=null; inflight=true;
+    fetch('/mouseto?fx='+fx.toFixed(4)+'&fy='+fy.toFixed(4)
+          +'&disp='+encodeURIComponent(disp()))
+      .catch(()=>{}).finally(()=>{inflight=false;flush();});
+  };
+  const point=e=>{
+    const r=tp.getBoundingClientRect();
+    const fx=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+    const fy=Math.min(1,Math.max(0,(e.clientY-r.top)/r.height));
+    dot.style.display='block';
+    dot.style.left=(fx*r.width)+'px'; dot.style.top=(fy*r.height)+'px';
+    pending=[fx,fy]; flush();
+  };
+  const rel=(x,y)=>{
     if(last){const dx=x-last[0],dy=y-last[1];
-      if(Math.abs(dx)>0||Math.abs(dy)>0)
-        fetch('/mousemove?dx='+Math.round(dx)+'&dy='+Math.round(dy)
-              +'&disp='+encodeURIComponent(disp())).catch(()=>{});}
+      if(dx||dy)fetch('/mousemove?dx='+Math.round(dx)+'&dy='+Math.round(dy)
+            +'&disp='+encodeURIComponent(disp())).catch(()=>{});}
     last=[x,y];
   };
-  tp.addEventListener('pointerdown',e=>{tp.setPointerCapture(e.pointerId);last=[e.clientX,e.clientY];});
-  tp.addEventListener('pointermove',e=>{if(last)move(e.clientX,e.clientY);});
-  tp.addEventListener('pointerup',()=>{last=null;});
+  const relMode=()=>$('#tprel').checked;
+
+  tp.addEventListener('pointerdown',e=>{
+    tp.setPointerCapture(e.pointerId); e.preventDefault();
+    down=[e.clientX,e.clientY,Date.now()];
+    if(relMode())last=[e.clientX,e.clientY]; else point(e);
+  });
+  tp.addEventListener('pointermove',e=>{
+    if(!e.buttons)return;
+    if(relMode()){if(last)rel(e.clientX,e.clientY);} else point(e);
+  });
+  tp.addEventListener('pointerup',e=>{
+    // A tap clicks where it landed. Pointing and then reaching for a separate
+    // "left click" button makes menu navigation two round-trips per item.
+    if($('#tptap').checked && !relMode() && down &&
+       Date.now()-down[2] < 500 &&
+       Math.hypot(e.clientX-down[0], e.clientY-down[1]) < 8){
+      const go=()=>fetch('/click?b=1&disp='+encodeURIComponent(disp())).catch(()=>{});
+      inflight ? setTimeout(go,60) : go();   // let the move land first
+    }
+    last=null; down=null;
+  });
+
+  $('#tpcentre').onclick=()=>fetch('/mouseto?fx=0.5&fy=0.5&disp='
+      +encodeURIComponent(disp())).catch(()=>{});
   document.querySelectorAll('[data-mb]').forEach(b=>b.onclick=()=>
     fetch('/click?b='+b.dataset.mb+'&disp='+encodeURIComponent(disp())).catch(()=>{}));
 })();
@@ -346,6 +439,32 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, "bad keysym")
             verb = "keydown" if u.path == "/keydown" else "keyup"
             return self._send(200, _xdo([verb, k], disp))
+        if u.path == "/geom":
+            q = urllib.parse.parse_qs(u.query)
+            disp = q.get("disp", [None])[0]
+            g = _game_geom(disp)
+            return self._send(200, json.dumps(g), "application/json")
+        if u.path == "/mouseto":
+            # ABSOLUTE, mapped into the game window.
+            #
+            # Relative motion is useless when the pointer starts outside the
+            # window - measured: the cursor sat at y=0 while the window begins
+            # at y=30, so every nudge moved a pointer the game could not see
+            # and the whole thing read as "the mouse does not work". A fraction
+            # of the window always lands inside it.
+            q = urllib.parse.parse_qs(u.query)
+            disp = q.get("disp", [None])[0]
+            g = _game_geom(disp)
+            if not g.get("ok"):
+                return self._send(404, json.dumps(g), "application/json")
+            try:
+                fx = max(0.0, min(1.0, float(q.get("fx", ["0.5"])[0])))
+                fy = max(0.0, min(1.0, float(q.get("fy", ["0.5"])[0])))
+            except ValueError:
+                return self._send(400, "bad fraction")
+            x = int(g["x"] + fx * g["w"])
+            y = int(g["y"] + fy * g["h"])
+            return self._send(200, _xdo(["mousemove", "--", str(x), str(y)], disp))
         if u.path == "/mousemove":
             q = urllib.parse.parse_qs(u.query)
             disp = q.get("disp", [None])[0]
